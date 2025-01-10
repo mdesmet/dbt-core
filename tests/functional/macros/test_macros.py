@@ -1,27 +1,28 @@
-import pytest
 import shutil
-
-import dbt.exceptions
-
 from pathlib import Path
 
-from dbt.tests.util import (
-    run_dbt,
-    check_relations_equal,
-)
+import pytest
 
+import dbt_common.exceptions
+from dbt.tests.fixtures.project import write_project_files
+from dbt.tests.util import check_relations_equal, run_dbt
 from tests.functional.macros.fixtures import (
-    models__dep_macro,
-    models__with_undefined_macro,
-    models__local_macro,
-    models__ref_macro,
-    models__override_get_columns_macros,
-    models__deprecated_adapter_macro_model,
+    dbt_project__incorrect_dispatch,
+    macros__deprecated_adapter_macro,
+    macros__incorrect_dispatch,
     macros__my_macros,
+    macros__named_materialization,
     macros__no_default_macros,
     macros__override_get_columns_macros,
     macros__package_override_get_columns_macros,
-    macros__deprecated_adapter_macro,
+    models__dep_macro,
+    models__deprecated_adapter_macro_model,
+    models__incorrect_dispatch,
+    models__local_macro,
+    models__materialization_macro,
+    models__override_get_columns_macros,
+    models__ref_macro,
+    models__with_undefined_macro,
 )
 
 
@@ -74,6 +75,21 @@ class TestMacros:
         check_relations_equal(project.adapter, ["expected_local_macro", "local_macro"])
 
 
+class TestMacrosNamedMaterialization:
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "models_materialization_macro.sql": models__materialization_macro,
+        }
+
+    @pytest.fixture(scope="class")
+    def macros(self):
+        return {"macros_named_materialization.sql": macros__named_materialization}
+
+    def test_macro_with_materialization_in_name_works(self, project):
+        run_dbt(expect_pass=True)
+
+
 class TestInvalidMacros:
     @pytest.fixture(scope="class")
     def models(self):
@@ -97,7 +113,7 @@ class TestAdapterMacroNoDestination:
         return {"my_macros.sql": macros__no_default_macros}
 
     def test_invalid_macro(self, project):
-        with pytest.raises(dbt.exceptions.CompilationException) as exc:
+        with pytest.raises(dbt_common.exceptions.CompilationError) as exc:
             run_dbt()
 
         assert "In dispatch: No macro named 'dispatch_to_nowhere' found" in str(exc.value)
@@ -203,6 +219,43 @@ class TestDispatchMacroOverrideBuiltin(TestMacroOverrideBuiltin):
         run_dbt()
 
 
+class TestMisnamedMacroNamespace:
+    @pytest.fixture(scope="class", autouse=True)
+    def setUp(self, project_root):
+        test_utils_files = {
+            "dbt_project.yml": dbt_project__incorrect_dispatch,
+            "macros": {
+                "cowsay.sql": macros__incorrect_dispatch,
+            },
+        }
+        write_project_files(project_root, "test_utils", test_utils_files)
+
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "my_model.sql": models__incorrect_dispatch,
+        }
+
+    @pytest.fixture(scope="class")
+    def packages(self):
+        return {
+            "packages": [
+                {"local": "test_utils"},
+            ]
+        }
+
+    def test_misnamed_macro_namespace(
+        self,
+        project,
+    ):
+        run_dbt(["deps"])
+
+        with pytest.raises(dbt_common.exceptions.CompilationError) as exc:
+            run_dbt()
+
+        assert "In dispatch: No macro named 'cowsay' found" in str(exc.value)
+
+
 class TestAdapterMacroDeprecated:
     @pytest.fixture(scope="class")
     def models(self):
@@ -213,7 +266,7 @@ class TestAdapterMacroDeprecated:
         return {"macro.sql": macros__deprecated_adapter_macro}
 
     def test_invalid_macro(self, project):
-        with pytest.raises(dbt.exceptions.CompilationException) as exc:
+        with pytest.raises(dbt_common.exceptions.CompilationError) as exc:
             run_dbt()
 
         assert 'The "adapter_macro" macro has been deprecated' in str(exc.value)

@@ -1,10 +1,55 @@
-
 models_sql = """
 select 1 as id
 """
 
 second_model_sql = """
 select 1 as id
+"""
+
+
+metricflow_time_spine_sql = """
+SELECT to_date('02/20/2023', 'mm/dd/yyyy') as date_day
+"""
+
+
+source_schema_yml = """version: 2
+
+sources:
+  - name: test_source
+    tables:
+      - name: test_table
+"""
+
+
+semantic_models_schema_yml = """version: 2
+
+semantic_models:
+  - name: semantic_model
+    model: ref('model')
+    dimensions:
+      - name: created_at
+        type: time
+    measures:
+      - name: distinct_metrics
+        agg: count_distinct
+        expr: id
+    entities:
+      - name: model
+        type: primary
+        expr: id
+    defaults:
+      agg_time_dimension: created_at
+"""
+
+
+metrics_schema_yml = """version: 2
+
+metrics:
+  - name: metric
+    label: "label"
+    type: simple
+    type_params:
+      measure: "distinct_metrics"
 """
 
 simple_exposure_yml = """
@@ -16,6 +61,8 @@ exposures:
     type: dashboard
     depends_on:
       - ref('model')
+      - source('test_source', 'test_table')
+      - metric('metric')
     owner:
       email: something@example.com
   - name: notebook_exposure

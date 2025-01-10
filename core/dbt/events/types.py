@@ -1,33 +1,20 @@
-from dataclasses import dataclass
-from dbt.ui import line_wrap_message, warning_tag, red, green, yellow
+import json
+
 from dbt.constants import MAXIMUM_SEED_SIZE_NAME, PIN_PACKAGE_URL
 from dbt.events.base_types import (
-    DynamicLevel,
-    NoFile,
     DebugLevel,
+    DynamicLevel,
+    ErrorLevel,
     InfoLevel,
     WarnLevel,
-    ErrorLevel,
-    Cache,
-    AdapterEventStringFunctor,
-    EventStringFunctor,
 )
-from dbt.events.format import format_fancy_output_line, pluralize
-
-# The generated classes quote the included message classes, requiring the following line
-from dbt.events.proto_types import EventInfo, RunResultMsg, ListOfStrings  # noqa
-from dbt.events.proto_types import NodeInfo, ReferenceKeyMsg  # noqa
-from dbt.events import proto_types as pt
-
-from dbt.node_types import NodeType
-
-
-# The classes in this file represent the data necessary to describe a
-# particular event to both human readable logs, and machine reliable
-# event streams. classes extend superclasses that indicate what
-# destinations they are intended for, which mypy uses to enforce
-# that the necessary methods are defined.
-
+from dbt_common.events.base_types import EventLevel
+from dbt_common.events.format import (
+    format_fancy_output_line,
+    pluralize,
+    timestamp_to_datetime_string,
+)
+from dbt_common.ui import error_tag, green, line_wrap_message, red, warning_tag, yellow
 
 # Event codes have prefixes which follow this table
 #
@@ -38,6 +25,7 @@ from dbt.node_types import NodeType
 # | E    | DB adapter          |
 # | I    | Project parsing     |
 # | M    | Deps generation     |
+# | P    | Artifacts           |
 # | Q    | Node execution      |
 # | W    | Node testing        |
 # | Z    | Misc                |
@@ -45,58 +33,40 @@ from dbt.node_types import NodeType
 #
 # The basic idea is that event codes roughly translate to the natural order of running a dbt task
 
-
-def format_adapter_message(name, base_msg, args) -> str:
-    # only apply formatting if there are arguments to format.
-    # avoids issues like "dict: {k: v}".format() which results in `KeyError 'k'`
-    msg = base_msg if len(args) == 0 else base_msg.format(*args)
-    return f"{name} adapter: {msg}"
-
-
 # =======================================================
 # A - Pre-project loading
 # =======================================================
 
 
-@dataclass
-class MainReportVersion(InfoLevel, pt.MainReportVersion):  # noqa
-    def code(self):
+class MainReportVersion(InfoLevel):
+    def code(self) -> str:
         return "A001"
 
-    def message(self):
+    def message(self) -> str:
         return f"Running with dbt{self.version}"
 
 
-@dataclass
-class MainReportArgs(DebugLevel, pt.MainReportArgs):  # noqa
-    def code(self):
+class MainReportArgs(DebugLevel):
+    def code(self) -> str:
         return "A002"
 
-    def message(self):
+    def message(self) -> str:
         return f"running dbt with arguments {str(self.args)}"
 
 
-@dataclass
-class MainTrackingUserState(DebugLevel, pt.MainTrackingUserState):
-    def code(self):
+class MainTrackingUserState(DebugLevel):
+    def code(self) -> str:
         return "A003"
 
-    def message(self):
+    def message(self) -> str:
         return f"Tracking: {self.user_state}"
 
 
-@dataclass
-class MergedFromState(DebugLevel, pt.MergedFromState):
-    def code(self):
-        return "A004"
-
-    def message(self) -> str:
-        return f"Merged {self.num_merged} items from state (sample: {self.sample})"
+# Removed A004: MergedFromState
 
 
-@dataclass
-class MissingProfileTarget(InfoLevel, pt.MissingProfileTarget):
-    def code(self):
+class MissingProfileTarget(InfoLevel):
+    def code(self) -> str:
         return "A005"
 
     def message(self) -> str:
@@ -106,121 +76,75 @@ class MissingProfileTarget(InfoLevel, pt.MissingProfileTarget):
 # Skipped A006, A007
 
 
-@dataclass
-class InvalidVarsYAML(ErrorLevel, pt.InvalidVarsYAML):
-    def code(self):
+class InvalidOptionYAML(ErrorLevel):
+    def code(self) -> str:
         return "A008"
 
     def message(self) -> str:
-        return "The YAML provided in the --vars argument is not valid."
+        return f"The YAML provided in the --{self.option_name} argument is not valid."
 
 
-@dataclass
-class DbtProjectError(ErrorLevel, pt.DbtProjectError):
-    def code(self):
+class LogDbtProjectError(ErrorLevel):
+    def code(self) -> str:
         return "A009"
 
     def message(self) -> str:
-        return "Encountered an error while reading the project:"
+        msg = "Encountered an error while reading the project:"
+        if self.exc:
+            msg += f"  ERROR: {str(self.exc)}"
+        return msg
 
 
-@dataclass
-class DbtProjectErrorException(ErrorLevel, pt.DbtProjectErrorException):
-    def code(self):
-        return "A010"
-
-    def message(self) -> str:
-        return f"  ERROR: {str(self.exc)}"
+# Skipped A010
 
 
-@dataclass
-class DbtProfileError(ErrorLevel, pt.DbtProfileError):
-    def code(self):
+class LogDbtProfileError(ErrorLevel):
+    def code(self) -> str:
         return "A011"
 
     def message(self) -> str:
-        return "Encountered an error while reading profiles:"
+        msg = "Encountered an error while reading profiles:\n" f"  ERROR: {str(self.exc)}"
+        if self.profiles:
+            msg += "Defined profiles:\n"
+            for profile in self.profiles:
+                msg += f" - {profile}"
+        else:
+            msg += "There are no profiles defined in your profiles.yml file"
 
-
-@dataclass
-class DbtProfileErrorException(ErrorLevel, pt.DbtProfileErrorException):
-    def code(self):
-        return "A012"
-
-    def message(self) -> str:
-        return f"  ERROR: {str(self.exc)}"
-
-
-@dataclass
-class ProfileListTitle(InfoLevel, pt.ProfileListTitle):
-    def code(self):
-        return "A013"
-
-    def message(self) -> str:
-        return "Defined profiles:"
-
-
-@dataclass
-class ListSingleProfile(InfoLevel, pt.ListSingleProfile):
-    def code(self):
-        return "A014"
-
-    def message(self) -> str:
-        return f" - {self.profile}"
-
-
-@dataclass
-class NoDefinedProfiles(InfoLevel, pt.NoDefinedProfiles):
-    def code(self):
-        return "A015"
-
-    def message(self) -> str:
-        return "There are no profiles defined in your profiles.yml file"
-
-
-@dataclass
-class ProfileHelpMessage(InfoLevel, pt.ProfileHelpMessage):
-    def code(self):
-        return "A016"
-
-    def message(self) -> str:
-        return """
+        msg += """
 For more information on configuring profiles, please consult the dbt docs:
 
 https://docs.getdbt.com/docs/configure-your-profile
 """
+        return msg
 
 
-@dataclass
-class StarterProjectPath(DebugLevel, pt.StarterProjectPath):
-    def code(self):
+class StarterProjectPath(DebugLevel):
+    def code(self) -> str:
         return "A017"
 
     def message(self) -> str:
         return f"Starter project path: {self.dir}"
 
 
-@dataclass
-class ConfigFolderDirectory(InfoLevel, pt.ConfigFolderDirectory):
-    def code(self):
+class ConfigFolderDirectory(InfoLevel):
+    def code(self) -> str:
         return "A018"
 
     def message(self) -> str:
         return f"Creating dbt configuration folder at {self.dir}"
 
 
-@dataclass
-class NoSampleProfileFound(InfoLevel, pt.NoSampleProfileFound):
-    def code(self):
+class NoSampleProfileFound(InfoLevel):
+    def code(self) -> str:
         return "A019"
 
     def message(self) -> str:
         return f"No sample profile found for {self.adapter}."
 
 
-@dataclass
-class ProfileWrittenWithSample(InfoLevel, pt.ProfileWrittenWithSample):
-    def code(self):
+class ProfileWrittenWithSample(InfoLevel):
+    def code(self) -> str:
         return "A020"
 
     def message(self) -> str:
@@ -231,9 +155,8 @@ class ProfileWrittenWithSample(InfoLevel, pt.ProfileWrittenWithSample):
         )
 
 
-@dataclass
-class ProfileWrittenWithTargetTemplateYAML(InfoLevel, pt.ProfileWrittenWithTargetTemplateYAML):
-    def code(self):
+class ProfileWrittenWithTargetTemplateYAML(InfoLevel):
+    def code(self) -> str:
         return "A021"
 
     def message(self) -> str:
@@ -244,9 +167,8 @@ class ProfileWrittenWithTargetTemplateYAML(InfoLevel, pt.ProfileWrittenWithTarge
         )
 
 
-@dataclass
-class ProfileWrittenWithProjectTemplateYAML(InfoLevel, pt.ProfileWrittenWithProjectTemplateYAML):
-    def code(self):
+class ProfileWrittenWithProjectTemplateYAML(InfoLevel):
+    def code(self) -> str:
         return "A022"
 
     def message(self) -> str:
@@ -257,40 +179,36 @@ class ProfileWrittenWithProjectTemplateYAML(InfoLevel, pt.ProfileWrittenWithProj
         )
 
 
-@dataclass
-class SettingUpProfile(InfoLevel, pt.SettingUpProfile):
-    def code(self):
+class SettingUpProfile(InfoLevel):
+    def code(self) -> str:
         return "A023"
 
     def message(self) -> str:
         return "Setting up your profile."
 
 
-@dataclass
-class InvalidProfileTemplateYAML(InfoLevel, pt.InvalidProfileTemplateYAML):
-    def code(self):
+class InvalidProfileTemplateYAML(InfoLevel):
+    def code(self) -> str:
         return "A024"
 
     def message(self) -> str:
         return "Invalid profile_template.yml in project."
 
 
-@dataclass
-class ProjectNameAlreadyExists(InfoLevel, pt.ProjectNameAlreadyExists):
-    def code(self):
+class ProjectNameAlreadyExists(InfoLevel):
+    def code(self) -> str:
         return "A025"
 
     def message(self) -> str:
         return f"A project called {self.name} already exists here."
 
 
-@dataclass
-class ProjectCreated(InfoLevel, pt.ProjectCreated):
-    def code(self):
+class ProjectCreated(InfoLevel):
+    def code(self) -> str:
         return "A026"
 
     def message(self) -> str:
-        return """
+        return f"""
 Your new dbt project "{self.project_name}" was created!
 
 For more information on how to configure the profiles.yml file,
@@ -313,12 +231,24 @@ Happy modeling!
 # =======================================================
 
 
-@dataclass
-class PackageRedirectDeprecation(WarnLevel, pt.PackageRedirectDeprecation):  # noqa
-    def code(self):
+class DeprecatedModel(WarnLevel):
+    def code(self) -> str:
+        return "I065"
+
+    def message(self) -> str:
+        version = ".v" + self.model_version if self.model_version else ""
+        msg = (
+            f"Model {self.model_name}{version} has passed its deprecation date of {self.deprecation_date}. "
+            "This model should be disabled or removed."
+        )
+        return warning_tag(msg)
+
+
+class PackageRedirectDeprecation(WarnLevel):
+    def code(self) -> str:
         return "D001"
 
-    def message(self):
+    def message(self) -> str:
         description = (
             f"The `{self.old_name}` package is deprecated in favor of `{self.new_name}`. Please "
             f"update your `packages.yml` configuration to use `{self.new_name}` instead."
@@ -326,12 +256,11 @@ class PackageRedirectDeprecation(WarnLevel, pt.PackageRedirectDeprecation):  # n
         return line_wrap_message(warning_tag(f"Deprecated functionality\n\n{description}"))
 
 
-@dataclass
-class PackageInstallPathDeprecation(WarnLevel, pt.PackageInstallPathDeprecation):  # noqa
-    def code(self):
+class PackageInstallPathDeprecation(WarnLevel):
+    def code(self) -> str:
         return "D002"
 
-    def message(self):
+    def message(self) -> str:
         description = """\
         The default package install path has changed from `dbt_modules` to `dbt_packages`.
         Please update `clean-targets` in `dbt_project.yml` and check `.gitignore` as well.
@@ -340,59 +269,40 @@ class PackageInstallPathDeprecation(WarnLevel, pt.PackageInstallPathDeprecation)
         return line_wrap_message(warning_tag(f"Deprecated functionality\n\n{description}"))
 
 
-@dataclass
-class ConfigSourcePathDeprecation(WarnLevel, pt.ConfigSourcePathDeprecation):  # noqa
-    def code(self):
+class ConfigSourcePathDeprecation(WarnLevel):
+    def code(self) -> str:
         return "D003"
 
-    def message(self):
+    def message(self) -> str:
         description = (
-            f"The `{self.deprecated_path}` config has been renamed to `{self.exp_path}`."
+            f"The `{self.deprecated_path}` config has been renamed to `{self.exp_path}`. "
             "Please update your `dbt_project.yml` configuration to reflect this change."
         )
         return line_wrap_message(warning_tag(f"Deprecated functionality\n\n{description}"))
 
 
-@dataclass
-class ConfigDataPathDeprecation(WarnLevel, pt.ConfigDataPathDeprecation):  # noqa
-    def code(self):
+class ConfigDataPathDeprecation(WarnLevel):
+    def code(self) -> str:
         return "D004"
 
-    def message(self):
+    def message(self) -> str:
         description = (
-            f"The `{self.deprecated_path}` config has been renamed to `{self.exp_path}`."
+            f"The `{self.deprecated_path}` config has been renamed to `{self.exp_path}`. "
             "Please update your `dbt_project.yml` configuration to reflect this change."
         )
         return line_wrap_message(warning_tag(f"Deprecated functionality\n\n{description}"))
 
 
-@dataclass
-class AdapterDeprecationWarning(WarnLevel, pt.AdapterDeprecationWarning):  # noqa
-    def code(self):
-        return "D005"
-
-    def message(self):
-        description = (
-            f"The adapter function `adapter.{self.old_name}` is deprecated and will be removed in "
-            f"a future release of dbt. Please use `adapter.{self.new_name}` instead. "
-            f"\n\nDocumentation for {self.new_name} can be found here:"
-            f"\n\nhttps://docs.getdbt.com/docs/adapter"
-        )
-        return line_wrap_message(warning_tag(f"Deprecated functionality\n\n{description}"))
-
-
-@dataclass
-class MetricAttributesRenamed(WarnLevel, pt.MetricAttributesRenamed):  # noqa
-    def code(self):
+class MetricAttributesRenamed(WarnLevel):
+    def code(self) -> str:
         return "D006"
 
-    def message(self):
+    def message(self) -> str:
         description = (
             "dbt-core v1.3 renamed attributes for metrics:"
             "\n  'sql'              -> 'expression'"
             "\n  'type'             -> 'calculation_method'"
             "\n  'type: expression' -> 'calculation_method: derived'"
-            "\nThe old metric parameter names will be fully deprecated in v1.4."
             f"\nPlease remove them from the metric definition of metric '{self.metric_name}'"
             "\nRelevant issue here: https://github.com/dbt-labs/dbt-core/issues/5849"
         )
@@ -400,12 +310,11 @@ class MetricAttributesRenamed(WarnLevel, pt.MetricAttributesRenamed):  # noqa
         return warning_tag(f"Deprecated functionality\n\n{description}")
 
 
-@dataclass
-class ExposureNameDeprecation(WarnLevel, pt.ExposureNameDeprecation):  # noqa
-    def code(self):
+class ExposureNameDeprecation(WarnLevel):
+    def code(self) -> str:
         return "D007"
 
-    def message(self):
+    def message(self) -> str:
         description = (
             "Starting in v1.3, the 'name' of an exposure should contain only letters, "
             "numbers, and underscores. Exposures support a new property, 'label', which may "
@@ -416,450 +325,175 @@ class ExposureNameDeprecation(WarnLevel, pt.ExposureNameDeprecation):  # noqa
         return line_wrap_message(warning_tag(f"Deprecated functionality\n\n{description}"))
 
 
-# =======================================================
-# E - DB Adapter
-# =======================================================
-
-
-@dataclass
-class AdapterEventDebug(DebugLevel, AdapterEventStringFunctor, pt.AdapterEventDebug):  # noqa
-    def code(self):
-        return "E001"
-
-    def message(self):
-        return format_adapter_message(self.name, self.base_msg, self.args)
-
-
-@dataclass
-class AdapterEventInfo(InfoLevel, AdapterEventStringFunctor, pt.AdapterEventInfo):  # noqa
-    def code(self):
-        return "E002"
-
-    def message(self):
-        return format_adapter_message(self.name, self.base_msg, self.args)
-
-
-@dataclass
-class AdapterEventWarning(WarnLevel, AdapterEventStringFunctor, pt.AdapterEventWarning):  # noqa
-    def code(self):
-        return "E003"
-
-    def message(self):
-        return format_adapter_message(self.name, self.base_msg, self.args)
-
-
-@dataclass
-class AdapterEventError(ErrorLevel, AdapterEventStringFunctor, pt.AdapterEventError):  # noqa
-    def code(self):
-        return "E004"
-
-    def message(self):
-        return format_adapter_message(self.name, self.base_msg, self.args)
-
-
-@dataclass
-class NewConnection(DebugLevel, pt.NewConnection):
-    def code(self):
-        return "E005"
+class InternalDeprecation(WarnLevel):
+    def code(self) -> str:
+        return "D008"
 
     def message(self) -> str:
-        return f'Acquiring new {self.conn_type} connection "{self.conn_name}"'
-
-
-@dataclass
-class ConnectionReused(DebugLevel, pt.ConnectionReused):
-    def code(self):
-        return "E006"
-
-    def message(self) -> str:
-        return f"Re-using an available connection from the pool (formerly {self.conn_name})"
-
-
-@dataclass
-class ConnectionLeftOpenInCleanup(DebugLevel, pt.ConnectionLeftOpenInCleanup):
-    def code(self):
-        return "E007"
-
-    def message(self) -> str:
-        return f"Connection '{self.conn_name}' was left open."
-
-
-@dataclass
-class ConnectionClosedInCleanup(DebugLevel, pt.ConnectionClosedInCleanup):
-    def code(self):
-        return "E008"
-
-    def message(self) -> str:
-        return f"Connection '{self.conn_name}' was properly closed."
-
-
-@dataclass
-class RollbackFailed(DebugLevel, pt.RollbackFailed):  # noqa
-    def code(self):
-        return "E009"
-
-    def message(self) -> str:
-        return f"Failed to rollback '{self.conn_name}'"
-
-
-# TODO: can we combine this with ConnectionClosed?
-@dataclass
-class ConnectionClosed(DebugLevel, pt.ConnectionClosed):
-    def code(self):
-        return "E010"
-
-    def message(self) -> str:
-        return f"On {self.conn_name}: Close"
-
-
-# TODO: can we combine this with ConnectionLeftOpen?
-@dataclass
-class ConnectionLeftOpen(DebugLevel, pt.ConnectionLeftOpen):
-    def code(self):
-        return "E011"
-
-    def message(self) -> str:
-        return f"On {self.conn_name}: No close available on handle"
-
-
-@dataclass
-class Rollback(DebugLevel, pt.Rollback):
-    def code(self):
-        return "E012"
-
-    def message(self) -> str:
-        return f"On {self.conn_name}: ROLLBACK"
-
-
-@dataclass
-class CacheMiss(DebugLevel, pt.CacheMiss):
-    def code(self):
-        return "E013"
-
-    def message(self) -> str:
-        return (
-            f'On "{self.conn_name}": cache miss for schema '
-            '"{self.database}.{self.schema}", this is inefficient'
+        extra_reason = ""
+        if self.reason:
+            extra_reason = f"\n{self.reason}"
+        msg = (
+            f"`{self.name}` is deprecated and will be removed in dbt-core version {self.version}\n\n"
+            f"Adapter maintainers can resolve this deprecation by {self.suggested_action}. {extra_reason}"
         )
+        return warning_tag(msg)
 
 
-@dataclass
-class ListRelations(DebugLevel, pt.ListRelations):
-    def code(self):
-        return "E014"
-
-    def message(self) -> str:
-        return f"with database={self.database}, schema={self.schema}, relations={self.relations}"
-
-
-@dataclass
-class ConnectionUsed(DebugLevel, pt.ConnectionUsed):
-    def code(self):
-        return "E015"
+class EnvironmentVariableRenamed(WarnLevel):
+    def code(self) -> str:
+        return "D009"
 
     def message(self) -> str:
-        return f'Using {self.conn_type} connection "{self.conn_name}"'
-
-
-@dataclass
-class SQLQuery(DebugLevel, pt.SQLQuery):
-    def code(self):
-        return "E016"
-
-    def message(self) -> str:
-        return f"On {self.conn_name}: {self.sql}"
-
-
-@dataclass
-class SQLQueryStatus(DebugLevel, pt.SQLQueryStatus):
-    def code(self):
-        return "E017"
-
-    def message(self) -> str:
-        return f"SQL status: {self.status} in {self.elapsed} seconds"
-
-
-@dataclass
-class SQLCommit(DebugLevel, pt.SQLCommit):
-    def code(self):
-        return "E018"
-
-    def message(self) -> str:
-        return f"On {self.conn_name}: COMMIT"
-
-
-@dataclass
-class ColTypeChange(DebugLevel, pt.ColTypeChange):
-    def code(self):
-        return "E019"
-
-    def message(self) -> str:
-        return f"Changing col type from {self.orig_type} to {self.new_type} in table {self.table}"
-
-
-@dataclass
-class SchemaCreation(DebugLevel, pt.SchemaCreation):
-    def code(self):
-        return "E020"
-
-    def message(self) -> str:
-        return f'Creating schema "{self.relation}"'
-
-
-@dataclass
-class SchemaDrop(DebugLevel, pt.SchemaDrop):
-    def code(self):
-        return "E021"
-
-    def message(self) -> str:
-        return f'Dropping schema "{self.relation}".'
-
-
-# TODO pretty sure this is only ever called in dead code
-# see: core/dbt/adapters/cache.py _add_link vs add_link
-@dataclass
-class UncachedRelation(DebugLevel, Cache, pt.UncachedRelation):
-    def code(self):
-        return "E022"
-
-    def message(self) -> str:
-        return (
-            f"{self.dep_key} references {str(self.ref_key)} "
-            "but {self.ref_key.database}.{self.ref_key.schema}"
-            "is not in the cache, skipping assumed external relation"
+        description = (
+            f"The environment variable `{self.old_name}` has been renamed as `{self.new_name}`.\n"
+            f"If `{self.old_name}` is currently set, its value will be used instead of `{self.new_name}`.\n"
+            f"Set `{self.new_name}` and unset `{self.old_name}` to avoid this deprecation warning and "
+            "ensure it works properly in a future release."
         )
+        return line_wrap_message(warning_tag(f"Deprecated functionality\n\n{description}"))
 
 
-@dataclass
-class AddLink(DebugLevel, Cache, pt.AddLink):
-    def code(self):
-        return "E023"
-
-    def message(self) -> str:
-        return f"adding link, {self.dep_key} references {self.ref_key}"
-
-
-@dataclass
-class AddRelation(DebugLevel, Cache, pt.AddRelation):
-    def code(self):
-        return "E024"
+class ConfigLogPathDeprecation(WarnLevel):
+    def code(self) -> str:
+        return "D010"
 
     def message(self) -> str:
-        return f"Adding relation: {str(self.relation)}"
-
-
-@dataclass
-class DropMissingRelation(DebugLevel, Cache, pt.DropMissingRelation):
-    def code(self):
-        return "E025"
-
-    def message(self) -> str:
-        return f"dropped a nonexistent relationship: {str(self.relation)}"
-
-
-@dataclass
-class DropCascade(DebugLevel, Cache, pt.DropCascade):
-    def code(self):
-        return "E026"
-
-    def message(self) -> str:
-        return f"drop {self.dropped} is cascading to {self.consequences}"
-
-
-@dataclass
-class DropRelation(DebugLevel, Cache, pt.DropRelation):
-    def code(self):
-        return "E027"
-
-    def message(self) -> str:
-        return f"Dropping relation: {self.dropped}"
-
-
-@dataclass
-class UpdateReference(DebugLevel, Cache, pt.UpdateReference):
-    def code(self):
-        return "E028"
-
-    def message(self) -> str:
-        return (
-            f"updated reference from {self.old_key} -> {self.cached_key} to "
-            "{self.new_key} -> {self.cached_key}"
+        output = "logs"
+        cli_flag = "--log-path"
+        env_var = "DBT_LOG_PATH"
+        description = (
+            f"The `{self.deprecated_path}` config in `dbt_project.yml` has been deprecated, "
+            f"and will no longer be supported in a future version of dbt-core. "
+            f"If you wish to write dbt {output} to a custom directory, please use "
+            f"the {cli_flag} CLI flag or {env_var} env var instead."
         )
+        return line_wrap_message(warning_tag(f"Deprecated functionality\n\n{description}"))
 
 
-@dataclass
-class TemporaryRelation(DebugLevel, Cache, pt.TemporaryRelation):
-    def code(self):
-        return "E029"
-
-    def message(self) -> str:
-        return f"old key {self.key} not found in self.relations, assuming temporary"
-
-
-@dataclass
-class RenameSchema(DebugLevel, Cache, pt.RenameSchema):
-    def code(self):
-        return "E030"
+class ConfigTargetPathDeprecation(WarnLevel):
+    def code(self) -> str:
+        return "D011"
 
     def message(self) -> str:
-        return f"Renaming relation {self.old_key} to {self.new_key}"
-
-
-@dataclass
-class DumpBeforeAddGraph(DebugLevel, Cache, pt.DumpBeforeAddGraph):
-    def code(self):
-        return "E031"
-
-    def message(self) -> str:
-        return f"before adding : {self.dump}"
-
-
-@dataclass
-class DumpAfterAddGraph(DebugLevel, Cache, pt.DumpAfterAddGraph):
-    def code(self):
-        return "E032"
-
-    def message(self) -> str:
-        return f"after adding: {self.dump}"
-
-
-@dataclass
-class DumpBeforeRenameSchema(DebugLevel, Cache, pt.DumpBeforeRenameSchema):
-    def code(self):
-        return "E033"
-
-    def message(self) -> str:
-        return f"before rename: {self.dump}"
-
-
-@dataclass
-class DumpAfterRenameSchema(DebugLevel, Cache, pt.DumpAfterRenameSchema):
-    def code(self):
-        return "E034"
-
-    def message(self) -> str:
-        return f"after rename: {self.dump}"
-
-
-@dataclass
-class AdapterImportError(InfoLevel, pt.AdapterImportError):
-    def code(self):
-        return "E035"
-
-    def message(self) -> str:
-        return f"Error importing adapter: {self.exc}"
-
-
-@dataclass
-class PluginLoadError(DebugLevel, pt.PluginLoadError):  # noqa
-    def code(self):
-        return "E036"
-
-    def message(self):
-        pass
-
-
-@dataclass
-class NewConnectionOpening(DebugLevel, pt.NewConnectionOpening):
-    def code(self):
-        return "E037"
-
-    def message(self) -> str:
-        return f"Opening a new connection, currently in state {self.connection_state}"
-
-
-@dataclass
-class CodeExecution(DebugLevel, pt.CodeExecution):
-    def code(self):
-        return "E038"
-
-    def message(self) -> str:
-        return f"On {self.conn_name}: {self.code_content}"
-
-
-@dataclass
-class CodeExecutionStatus(DebugLevel, pt.CodeExecutionStatus):
-    def code(self):
-        return "E039"
-
-    def message(self) -> str:
-        return f"Execution status: {self.status} in {self.elapsed} seconds"
-
-
-@dataclass
-class CatalogGenerationError(WarnLevel, pt.CatalogGenerationError):
-    def code(self):
-        return "E040"
-
-    def message(self) -> str:
-        return f"Encountered an error while generating catalog: {self.exc}"
-
-
-@dataclass
-class WriteCatalogFailure(ErrorLevel, pt.WriteCatalogFailure):
-    def code(self):
-        return "E041"
-
-    def message(self) -> str:
-        return (
-            f"dbt encountered {self.num_exceptions} failure{(self.num_exceptions != 1) * 's'} "
-            "while writing the catalog"
+        output = "artifacts"
+        cli_flag = "--target-path"
+        env_var = "DBT_TARGET_PATH"
+        description = (
+            f"The `{self.deprecated_path}` config in `dbt_project.yml` has been deprecated, "
+            f"and will no longer be supported in a future version of dbt-core. "
+            f"If you wish to write dbt {output} to a custom directory, please use "
+            f"the {cli_flag} CLI flag or {env_var} env var instead."
         )
+        return line_wrap_message(warning_tag(f"Deprecated functionality\n\n{description}"))
 
 
-@dataclass
-class CatalogWritten(InfoLevel, pt.CatalogWritten):
-    def code(self):
-        return "E042"
-
-    def message(self) -> str:
-        return f"Catalog written to {self.path}"
-
-
-@dataclass
-class CannotGenerateDocs(InfoLevel, pt.CannotGenerateDocs):
-    def code(self):
-        return "E043"
+# Note: this deprecation has been removed, but we are leaving
+# the event class here, because users may have specified it in
+# warn_error_options.
+class TestsConfigDeprecation(WarnLevel):
+    def code(self) -> str:
+        return "D012"
 
     def message(self) -> str:
-        return "compile failed, cannot generate docs"
+        description = (
+            f"The `{self.deprecated_path}` config has been renamed to `{self.exp_path}`. "
+            "Please see https://docs.getdbt.com/docs/build/data-tests#new-data_tests-syntax for more information."
+        )
+        return line_wrap_message(warning_tag(f"Deprecated functionality\n\n{description}"))
 
 
-@dataclass
-class BuildingCatalog(InfoLevel, pt.BuildingCatalog):
-    def code(self):
-        return "E044"
-
-    def message(self) -> str:
-        return "Building catalog"
-
-
-@dataclass
-class DatabaseErrorRunningHook(InfoLevel, pt.DatabaseErrorRunningHook):
-    def code(self):
-        return "E045"
+class ProjectFlagsMovedDeprecation(WarnLevel):
+    def code(self) -> str:
+        return "D013"
 
     def message(self) -> str:
-        return f"Database error while running {self.hook_type}"
+        description = (
+            "User config should be moved from the 'config' key in profiles.yml to the 'flags' "
+            "key in dbt_project.yml."
+        )
+        # Can't use line_wrap_message here because flags.printer_width isn't available yet
+        return warning_tag(f"Deprecated functionality\n\n{description}")
 
 
-@dataclass
-class HooksRunning(InfoLevel, pt.HooksRunning):
-    def code(self):
-        return "E046"
-
-    def message(self) -> str:
-        plural = "hook" if self.num_hooks == 1 else "hooks"
-        return f"Running {self.num_hooks} {self.hook_type} {plural}"
-
-
-@dataclass
-class HookFinished(InfoLevel, pt.HookFinished):
-    def code(self):
-        return "E047"
+class SpacesInResourceNameDeprecation(DynamicLevel):
+    def code(self) -> str:
+        return "D014"
 
     def message(self) -> str:
-        return f"Finished running {self.stat_line}{self.execution} ({self.execution_time:0.2f}s)."
+        description = f"Found spaces in the name of `{self.unique_id}`"
+
+        if self.level == EventLevel.ERROR.value:
+            description = error_tag(description)
+        elif self.level == EventLevel.WARN.value:
+            description = warning_tag(description)
+
+        return line_wrap_message(description)
+
+
+class ResourceNamesWithSpacesDeprecation(WarnLevel):
+    def code(self) -> str:
+        return "D015"
+
+    def message(self) -> str:
+        description = f"Spaces found in {self.count_invalid_names} resource name(s). This is deprecated, and may lead to errors when using dbt."
+
+        if self.show_debug_hint:
+            description += " Run again with `--debug` to see them all."
+
+        description += " For more information: https://docs.getdbt.com/reference/global-configs/legacy-behaviors"
+
+        return line_wrap_message(warning_tag(description))
+
+
+class PackageMaterializationOverrideDeprecation(WarnLevel):
+    def code(self) -> str:
+        return "D016"
+
+    def message(self) -> str:
+        description = f"Installed package '{self.package_name}' is overriding the built-in materialization '{self.materialization_name}'. Overrides of built-in materializations from installed packages will be deprecated in future versions of dbt. For more information: https://docs.getdbt.com/reference/global-configs/legacy-behaviors"
+
+        return line_wrap_message(warning_tag(description))
+
+
+class SourceFreshnessProjectHooksNotRun(WarnLevel):
+    def code(self) -> str:
+        return "D017"
+
+    def message(self) -> str:
+        description = "In a future version of dbt, the `source freshness` command will start running `on-run-start` and `on-run-end` hooks by default. For more information: https://docs.getdbt.com/reference/global-configs/legacy-behaviors"
+
+        return line_wrap_message(warning_tag(description))
+
+
+class MFTimespineWithoutYamlConfigurationDeprecation(WarnLevel):
+    def code(self) -> str:
+        return "D018"
+
+    def message(self) -> str:
+        description = "Time spines without YAML configuration are in the process of deprecation. Please add YAML configuration for your 'metricflow_time_spine' model. See documentation on MetricFlow time spines: https://docs.getdbt.com/docs/build/metricflow-time-spine and behavior change documentation: https://docs.getdbt.com/reference/global-configs/behavior-changes."
+
+        return line_wrap_message(warning_tag(description))
+
+
+class MFCumulativeTypeParamsDeprecation(WarnLevel):
+    def code(self) -> str:
+        return "D019"
+
+    def message(self) -> str:
+        description = "Cumulative fields `type_params.window` and `type_params.grain_to_date` have been moved and will soon be deprecated. Please nest those values under `type_params.cumulative_type_params.window` and `type_params.cumulative_type_params.grain_to_date`. See documentation on behavior changes: https://docs.getdbt.com/reference/global-configs/behavior-changes."
+
+        return line_wrap_message(warning_tag(description))
+
+
+class MicrobatchMacroOutsideOfBatchesDeprecation(WarnLevel):
+    def code(self) -> str:
+        return "D020"
+
+    def message(self) -> str:
+        description = "The use of a custom microbatch macro outside of batched execution is deprecated. To use it with batched execution, set `flags.require_batched_execution_for_custom_microbatch_strategy` to `True` in `dbt_project.yml`. In the future this will be the default behavior."
+
+        return line_wrap_message(warning_tag(description))
 
 
 # =======================================================
@@ -867,382 +501,120 @@ class HookFinished(InfoLevel, pt.HookFinished):
 # =======================================================
 
 
-@dataclass
-class ParseCmdStart(InfoLevel, pt.ParseCmdStart):
-    def code(self):
+class InputFileDiffError(DebugLevel):
+    def code(self) -> str:
         return "I001"
 
     def message(self) -> str:
-        return "Start parsing."
+        return f"Error processing file diff: {self.category}, {self.file_id}"
 
 
-@dataclass
-class ParseCmdCompiling(InfoLevel, pt.ParseCmdCompiling):
-    def code(self):
-        return "I002"
-
-    def message(self) -> str:
-        return "Compiling."
+# Skipping I003, I004, I005, I006, I007
 
 
-@dataclass
-class ParseCmdWritingManifest(InfoLevel, pt.ParseCmdWritingManifest):
-    def code(self):
-        return "I003"
-
-    def message(self) -> str:
-        return "Writing manifest."
-
-
-@dataclass
-class ParseCmdDone(InfoLevel, pt.ParseCmdDone):
-    def code(self):
-        return "I004"
-
-    def message(self) -> str:
-        return "Done."
-
-
-@dataclass
-class ManifestDependenciesLoaded(InfoLevel, pt.ManifestDependenciesLoaded):
-    def code(self):
-        return "I005"
-
-    def message(self) -> str:
-        return "Dependencies loaded"
-
-
-@dataclass
-class ManifestLoaderCreated(InfoLevel, pt.ManifestLoaderCreated):
-    def code(self):
-        return "I006"
-
-    def message(self) -> str:
-        return "ManifestLoader created"
-
-
-@dataclass
-class ManifestLoaded(InfoLevel, pt.ManifestLoaded):
-    def code(self):
-        return "I007"
-
-    def message(self) -> str:
-        return "Manifest loaded"
-
-
-@dataclass
-class ManifestChecked(InfoLevel, pt.ManifestChecked):
-    def code(self):
+class InvalidValueForField(WarnLevel):
+    def code(self) -> str:
         return "I008"
 
     def message(self) -> str:
-        return "Manifest checked"
+        return f"Invalid value ({self.field_value}) for field {self.field_name}"
 
 
-@dataclass
-class ManifestFlatGraphBuilt(InfoLevel, pt.ManifestFlatGraphBuilt):
-    def code(self):
+class ValidationWarning(WarnLevel):
+    def code(self) -> str:
         return "I009"
 
     def message(self) -> str:
-        return "Flat graph built"
+        return f"Field {self.field_name} is not valid for {self.resource_type} ({self.node_name})"
 
 
-@dataclass
-class ParseCmdPerfInfoPath(InfoLevel, pt.ParseCmdPerfInfoPath):
-    def code(self):
+class ParsePerfInfoPath(InfoLevel):
+    def code(self) -> str:
         return "I010"
 
     def message(self) -> str:
         return f"Performance info: {self.path}"
 
 
-@dataclass
-class GenericTestFileParse(DebugLevel, pt.GenericTestFileParse):
-    def code(self):
-        return "I011"
-
-    def message(self) -> str:
-        return f"Parsing {self.path}"
+# Removed I011: GenericTestFileParse
 
 
-@dataclass
-class MacroFileParse(DebugLevel, pt.MacroFileParse):
-    def code(self):
-        return "I012"
-
-    def message(self) -> str:
-        return f"Parsing {self.path}"
+# Removed I012: MacroFileParse
 
 
-@dataclass
-class PartialParsingFullReparseBecauseOfError(
-    InfoLevel, pt.PartialParsingFullReparseBecauseOfError
-):
-    def code(self):
-        return "I013"
-
-    def message(self) -> str:
-        return "Partial parsing enabled but an error occurred. Switching to a full re-parse."
+# Skipping I013
 
 
-@dataclass
-class PartialParsingExceptionFile(DebugLevel, pt.PartialParsingExceptionFile):
-    def code(self):
+class PartialParsingErrorProcessingFile(DebugLevel):
+    def code(self) -> str:
         return "I014"
 
     def message(self) -> str:
         return f"Partial parsing exception processing file {self.file}"
 
 
-@dataclass
-class PartialParsingFile(DebugLevel, pt.PartialParsingFile):
-    def code(self):
-        return "I015"
-
-    def message(self) -> str:
-        return f"PP file: {self.file_id}"
+# Skipped I015
 
 
-@dataclass
-class PartialParsingException(DebugLevel, pt.PartialParsingException):
-    def code(self):
+class PartialParsingError(DebugLevel):
+    def code(self) -> str:
         return "I016"
 
     def message(self) -> str:
         return f"PP exception info: {self.exc_info}"
 
 
-@dataclass
-class PartialParsingSkipParsing(DebugLevel, pt.PartialParsingSkipParsing):
-    def code(self):
+class PartialParsingSkipParsing(DebugLevel):
+    def code(self) -> str:
         return "I017"
 
     def message(self) -> str:
         return "Partial parsing enabled, no changes found, skipping parsing"
 
 
-@dataclass
-class PartialParsingMacroChangeStartFullParse(
-    InfoLevel, pt.PartialParsingMacroChangeStartFullParse
-):
-    def code(self):
-        return "I018"
-
-    def message(self) -> str:
-        return "Change detected to override macro used during parsing. Starting full parse."
+# Skipped I018, I019, I020, I021, I022, I023
 
 
-@dataclass
-class PartialParsingProjectEnvVarsChanged(InfoLevel, pt.PartialParsingProjectEnvVarsChanged):
-    def code(self):
-        return "I019"
-
-    def message(self) -> str:
-        return "Unable to do partial parsing because env vars used in dbt_project.yml have changed"
-
-
-@dataclass
-class PartialParsingProfileEnvVarsChanged(InfoLevel, pt.PartialParsingProfileEnvVarsChanged):
-    def code(self):
-        return "I020"
-
-    def message(self) -> str:
-        return "Unable to do partial parsing because env vars used in profiles.yml have changed"
-
-
-@dataclass
-class PartialParsingDeletedMetric(DebugLevel, pt.PartialParsingDeletedMetric):
-    def code(self):
-        return "I021"
-
-    def message(self) -> str:
-        return f"Partial parsing: deleted metric {self.unique_id}"
-
-
-@dataclass
-class ManifestWrongMetadataVersion(DebugLevel, pt.ManifestWrongMetadataVersion):
-    def code(self):
-        return "I022"
-
-    def message(self) -> str:
-        return (
-            "Manifest metadata did not contain correct version. "
-            f"Contained '{self.version}' instead."
-        )
-
-
-@dataclass
-class PartialParsingVersionMismatch(InfoLevel, pt.PartialParsingVersionMismatch):
-    def code(self):
-        return "I023"
-
-    def message(self) -> str:
-        return (
-            "Unable to do partial parsing because of a dbt version mismatch. "
-            f"Saved manifest version: {self.saved_version}. "
-            f"Current version: {self.current_version}."
-        )
-
-
-@dataclass
-class PartialParsingFailedBecauseConfigChange(
-    InfoLevel, pt.PartialParsingFailedBecauseConfigChange
-):
-    def code(self):
+class UnableToPartialParse(InfoLevel):
+    def code(self) -> str:
         return "I024"
 
     def message(self) -> str:
-        return (
-            "Unable to do partial parsing because config vars, "
-            "config profile, or config target have changed"
-        )
+        return f"Unable to do partial parsing because {self.reason}"
 
 
-@dataclass
-class PartialParsingFailedBecauseProfileChange(
-    InfoLevel, pt.PartialParsingFailedBecauseProfileChange
-):
-    def code(self):
+class StateCheckVarsHash(DebugLevel):
+    def code(self) -> str:
         return "I025"
 
     def message(self) -> str:
-        return "Unable to do partial parsing because profile has changed"
+        return f"checksum: {self.checksum}, vars: {self.vars}, profile: {self.profile}, target: {self.target}, version: {self.version}"
 
 
-@dataclass
-class PartialParsingFailedBecauseNewProjectDependency(
-    InfoLevel, pt.PartialParsingFailedBecauseNewProjectDependency
-):
-    def code(self):
-        return "I026"
-
-    def message(self) -> str:
-        return "Unable to do partial parsing because a project dependency has been added"
+# Skipped I025, I026, I026, I027
 
 
-@dataclass
-class PartialParsingFailedBecauseHashChanged(InfoLevel, pt.PartialParsingFailedBecauseHashChanged):
-    def code(self):
-        return "I027"
-
-    def message(self) -> str:
-        return "Unable to do partial parsing because a project config has changed"
-
-
-@dataclass
-class PartialParsingNotEnabled(DebugLevel, pt.PartialParsingNotEnabled):
-    def code(self):
+class PartialParsingNotEnabled(DebugLevel):
+    def code(self) -> str:
         return "I028"
 
     def message(self) -> str:
         return "Partial parsing not enabled"
 
 
-@dataclass
-class ParsedFileLoadFailed(DebugLevel, pt.ParsedFileLoadFailed):  # noqa
-    def code(self):
+class ParsedFileLoadFailed(DebugLevel):
+    def code(self) -> str:
         return "I029"
 
     def message(self) -> str:
         return f"Failed to load parsed file from disk at {self.path}: {self.exc}"
 
 
-@dataclass
-class PartialParseSaveFileNotFound(InfoLevel, pt.PartialParseSaveFileNotFound):
-    def code(self):
-        return "I030"
-
-    def message(self) -> str:
-        return "Partial parse save file not found. Starting full parse."
+# Skipped I030-I039
 
 
-@dataclass
-class StaticParserCausedJinjaRendering(DebugLevel, pt.StaticParserCausedJinjaRendering):
-    def code(self):
-        return "I031"
-
-    def message(self) -> str:
-        return f"1605: jinja rendering because of STATIC_PARSER flag. file: {self.path}"
-
-
-# TODO: Experimental/static parser uses these for testing and some may be a good use case for
-#       the `TestLevel` logger once we implement it.  Some will probably stay `DebugLevel`.
-@dataclass
-class UsingExperimentalParser(DebugLevel, pt.UsingExperimentalParser):
-    def code(self):
-        return "I032"
-
-    def message(self) -> str:
-        return f"1610: conducting experimental parser sample on {self.path}"
-
-
-@dataclass
-class SampleFullJinjaRendering(DebugLevel, pt.SampleFullJinjaRendering):
-    def code(self):
-        return "I033"
-
-    def message(self) -> str:
-        return f"1611: conducting full jinja rendering sample on {self.path}"
-
-
-@dataclass
-class StaticParserFallbackJinjaRendering(DebugLevel, pt.StaticParserFallbackJinjaRendering):
-    def code(self):
-        return "I034"
-
-    def message(self) -> str:
-        return f"1602: parser fallback to jinja rendering on {self.path}"
-
-
-@dataclass
-class StaticParsingMacroOverrideDetected(DebugLevel, pt.StaticParsingMacroOverrideDetected):
-    def code(self):
-        return "I035"
-
-    def message(self) -> str:
-        return f"1601: detected macro override of ref/source/config in the scope of {self.path}"
-
-
-@dataclass
-class StaticParserSuccess(DebugLevel, pt.StaticParserSuccess):
-    def code(self):
-        return "I036"
-
-    def message(self) -> str:
-        return f"1699: static parser successfully parsed {self.path}"
-
-
-@dataclass
-class StaticParserFailure(DebugLevel, pt.StaticParserFailure):
-    def code(self):
-        return "I037"
-
-    def message(self) -> str:
-        return f"1603: static parser failed on {self.path}"
-
-
-@dataclass
-class ExperimentalParserSuccess(DebugLevel, pt.ExperimentalParserSuccess):
-    def code(self):
-        return "I038"
-
-    def message(self) -> str:
-        return f"1698: experimental parser successfully parsed {self.path}"
-
-
-@dataclass
-class ExperimentalParserFailure(DebugLevel, pt.ExperimentalParserFailure):
-    def code(self):
-        return "I039"
-
-    def message(self) -> str:
-        return f"1604: experimental parser failed on {self.path}"
-
-
-@dataclass
-class PartialParsingEnabled(DebugLevel, pt.PartialParsingEnabled):
-    def code(self):
+class PartialParsingEnabled(DebugLevel):
+    def code(self) -> str:
         return "I040"
 
     def message(self) -> str:
@@ -1254,113 +626,38 @@ class PartialParsingEnabled(DebugLevel, pt.PartialParsingEnabled):
         )
 
 
-@dataclass
-class PartialParsingAddedFile(DebugLevel, pt.PartialParsingAddedFile):
-    def code(self):
+class PartialParsingFile(DebugLevel):
+    def code(self) -> str:
         return "I041"
 
     def message(self) -> str:
-        return f"Partial parsing: added file: {self.file_id}"
+        return f"Partial parsing: {self.operation} file: {self.file_id}"
 
 
-@dataclass
-class PartialParsingDeletedFile(DebugLevel, pt.PartialParsingDeletedFile):
-    def code(self):
-        return "I042"
-
-    def message(self) -> str:
-        return f"Partial parsing: deleted file: {self.file_id}"
+# Skipped I042, I043, I044, I045, I046, I047, I048, I049
 
 
-@dataclass
-class PartialParsingUpdatedFile(DebugLevel, pt.PartialParsingUpdatedFile):
-    def code(self):
-        return "I043"
-
-    def message(self) -> str:
-        return f"Partial parsing: updated file: {self.file_id}"
-
-
-@dataclass
-class PartialParsingNodeMissingInSourceFile(DebugLevel, pt.PartialParsingNodeMissingInSourceFile):
-    def code(self):
-        return "I044"
-
-    def message(self) -> str:
-        return f"Partial parsing: nodes list not found in source_file {self.file_id}"
-
-
-@dataclass
-class PartialParsingMissingNodes(DebugLevel, pt.PartialParsingMissingNodes):
-    def code(self):
-        return "I045"
-
-    def message(self) -> str:
-        return f"No nodes found for source file {self.file_id}"
-
-
-@dataclass
-class PartialParsingChildMapMissingUniqueID(DebugLevel, pt.PartialParsingChildMapMissingUniqueID):
-    def code(self):
-        return "I046"
-
-    def message(self) -> str:
-        return f"Partial parsing: {self.unique_id} not found in child_map"
-
-
-@dataclass
-class PartialParsingUpdateSchemaFile(DebugLevel, pt.PartialParsingUpdateSchemaFile):
-    def code(self):
-        return "I047"
-
-    def message(self) -> str:
-        return f"Partial parsing: update schema file: {self.file_id}"
-
-
-@dataclass
-class PartialParsingDeletedSource(DebugLevel, pt.PartialParsingDeletedSource):
-    def code(self):
-        return "I048"
-
-    def message(self) -> str:
-        return f"Partial parsing: deleted source {self.unique_id}"
-
-
-@dataclass
-class PartialParsingDeletedExposure(DebugLevel, pt.PartialParsingDeletedExposure):
-    def code(self):
-        return "I049"
-
-    def message(self) -> str:
-        return f"Partial parsing: deleted exposure {self.unique_id}"
-
-
-@dataclass
-class InvalidDisabledTargetInTestNode(WarnLevel, pt.InvalidDisabledTargetInTestNode):
-    def code(self):
+class InvalidDisabledTargetInTestNode(DebugLevel):
+    def code(self) -> str:
         return "I050"
 
     def message(self) -> str:
-
         target_package_string = ""
-        if self.target_package != target_package_string:
-            target_package_string = "in package '{}' ".format(self.target_package)
 
-        msg = "{} '{}' ({}) depends on a {} named '{}' {}which is disabled".format(
-            self.resource_type_title,
-            self.unique_id,
-            self.original_file_path,
-            self.target_kind,
-            self.target_name,
-            target_package_string,
+        if self.target_package != target_package_string:
+            target_package_string = f"in package '{self.target_package}' "
+
+        msg = (
+            f"{self.resource_type_title} '{self.unique_id}' "
+            f"({self.original_file_path}) depends on a {self.target_kind} "
+            f"named '{self.target_name}' {target_package_string}which is disabled"
         )
 
         return warning_tag(msg)
 
 
-@dataclass
-class UnusedResourceConfigPath(WarnLevel, pt.UnusedResourceConfigPath):
-    def code(self):
+class UnusedResourceConfigPath(WarnLevel):
+    def code(self) -> str:
         return "I051"
 
     def message(self) -> str:
@@ -1373,9 +670,8 @@ class UnusedResourceConfigPath(WarnLevel, pt.UnusedResourceConfigPath):
         return warning_tag(msg)
 
 
-@dataclass
-class SeedIncreased(WarnLevel, pt.SeedIncreased):
-    def code(self):
+class SeedIncreased(WarnLevel):
+    def code(self) -> str:
         return "I052"
 
     def message(self) -> str:
@@ -1387,9 +683,8 @@ class SeedIncreased(WarnLevel, pt.SeedIncreased):
         return msg
 
 
-@dataclass
-class SeedExceedsLimitSamePath(WarnLevel, pt.SeedExceedsLimitSamePath):
-    def code(self):
+class SeedExceedsLimitSamePath(WarnLevel):
+    def code(self) -> str:
         return "I053"
 
     def message(self) -> str:
@@ -1401,9 +696,8 @@ class SeedExceedsLimitSamePath(WarnLevel, pt.SeedExceedsLimitSamePath):
         return msg
 
 
-@dataclass
-class SeedExceedsLimitAndPathChanged(WarnLevel, pt.SeedExceedsLimitAndPathChanged):
-    def code(self):
+class SeedExceedsLimitAndPathChanged(WarnLevel):
+    def code(self) -> str:
         return "I054"
 
     def message(self) -> str:
@@ -1415,9 +709,8 @@ class SeedExceedsLimitAndPathChanged(WarnLevel, pt.SeedExceedsLimitAndPathChange
         return msg
 
 
-@dataclass
-class SeedExceedsLimitChecksumChanged(WarnLevel, pt.SeedExceedsLimitChecksumChanged):
-    def code(self):
+class SeedExceedsLimitChecksumChanged(WarnLevel):
+    def code(self) -> str:
         return "I055"
 
     def message(self) -> str:
@@ -1429,9 +722,8 @@ class SeedExceedsLimitChecksumChanged(WarnLevel, pt.SeedExceedsLimitChecksumChan
         return msg
 
 
-@dataclass
-class UnusedTables(WarnLevel, pt.UnusedTables):
-    def code(self):
+class UnusedTables(WarnLevel):
+    def code(self) -> str:
         return "I056"
 
     def message(self) -> str:
@@ -1443,9 +735,8 @@ class UnusedTables(WarnLevel, pt.UnusedTables):
         return warning_tag("\n".join(msg))
 
 
-@dataclass
-class WrongResourceSchemaFile(WarnLevel, pt.WrongResourceSchemaFile):
-    def code(self):
+class WrongResourceSchemaFile(WarnLevel):
+    def code(self) -> str:
         return "I057"
 
     def message(self) -> str:
@@ -1461,9 +752,8 @@ class WrongResourceSchemaFile(WarnLevel, pt.WrongResourceSchemaFile):
         return warning_tag(msg)
 
 
-@dataclass
-class NoNodeForYamlKey(WarnLevel, pt.NoNodeForYamlKey):
-    def code(self):
+class NoNodeForYamlKey(WarnLevel):
+    def code(self) -> str:
         return "I058"
 
     def message(self) -> str:
@@ -1475,9 +765,8 @@ class NoNodeForYamlKey(WarnLevel, pt.NoNodeForYamlKey):
         return warning_tag(msg)
 
 
-@dataclass
-class MacroPatchNotFound(WarnLevel, pt.MacroPatchNotFound):
-    def code(self):
+class MacroNotFoundForPatch(WarnLevel):
+    def code(self) -> str:
         return "I059"
 
     def message(self) -> str:
@@ -1485,15 +774,14 @@ class MacroPatchNotFound(WarnLevel, pt.MacroPatchNotFound):
         return warning_tag(msg)
 
 
-@dataclass
-class NodeNotFoundOrDisabled(WarnLevel, pt.NodeNotFoundOrDisabled):
-    def code(self):
+class NodeNotFoundOrDisabled(WarnLevel):
+    def code(self) -> str:
         return "I060"
 
     def message(self) -> str:
         # this is duplicated logic from exceptions.get_not_found_or_disabled_msg
-        # when we convert exceptions to be stuctured maybe it can be combined?
-        # convverting the bool to a string since None is also valid
+        # when we convert exceptions to be structured maybe it can be combined?
+        # converting the bool to a string since None is also valid
         if self.disabled == "None":
             reason = "was not found or is disabled"
         elif self.disabled == "True":
@@ -1502,29 +790,191 @@ class NodeNotFoundOrDisabled(WarnLevel, pt.NodeNotFoundOrDisabled):
             reason = "was not found"
 
         target_package_string = ""
-        if self.target_package is not None:
-            target_package_string = "in package '{}' ".format(self.target_package)
 
-        msg = "{} '{}' ({}) depends on a {} named '{}' {}which {}".format(
-            self.resource_type_title,
-            self.unique_id,
-            self.original_file_path,
-            self.target_kind,
-            self.target_name,
-            target_package_string,
-            reason,
+        if self.target_package is not None:
+            target_package_string = f"in package '{self.target_package}' "
+
+        msg = (
+            f"{self.resource_type_title} '{self.unique_id}' "
+            f"({self.original_file_path}) depends on a {self.target_kind} "
+            f"named '{self.target_name}' {target_package_string}which {reason}"
         )
 
         return warning_tag(msg)
 
 
-@dataclass
-class JinjaLogWarning(WarnLevel, pt.JinjaLogWarning):
-    def code(self):
+class JinjaLogWarning(WarnLevel):
+    def code(self) -> str:
         return "I061"
 
     def message(self) -> str:
         return self.msg
+
+
+class JinjaLogInfo(InfoLevel):
+    def code(self) -> str:
+        return "I062"
+
+    def message(self) -> str:
+        # This is for the log method used in macros so msg cannot be built here
+        return self.msg
+
+
+class JinjaLogDebug(DebugLevel):
+    def code(self) -> str:
+        return "I063"
+
+    def message(self) -> str:
+        # This is for the log method used in macros so msg cannot be built here
+        return self.msg
+
+
+class UnpinnedRefNewVersionAvailable(InfoLevel):
+    def code(self) -> str:
+        return "I064"
+
+    def message(self) -> str:
+        msg = (
+            f"While compiling '{self.node_info.node_name}':\n"
+            f"Found an unpinned reference to versioned model '{self.ref_node_name}' in project '{self.ref_node_package}'.\n"
+            f"Resolving to latest version: {self.ref_node_name}.v{self.ref_node_version}\n"
+            f"A prerelease version {self.ref_max_version} is available. It has not yet been marked 'latest' by its maintainer.\n"
+            f"When that happens, this reference will resolve to {self.ref_node_name}.v{self.ref_max_version} instead.\n\n"
+            f"  Try out v{self.ref_max_version}: {{{{ ref('{self.ref_node_package}', '{self.ref_node_name}', v='{self.ref_max_version}') }}}}\n"
+            f"  Pin to  v{self.ref_node_version}: {{{{ ref('{self.ref_node_package}', '{self.ref_node_name}', v='{self.ref_node_version}') }}}}\n"
+        )
+        return msg
+
+
+class UpcomingReferenceDeprecation(WarnLevel):
+    def code(self) -> str:
+        return "I066"
+
+    def message(self) -> str:
+        ref_model_version = ".v" + self.ref_model_version if self.ref_model_version else ""
+        msg = (
+            f"While compiling '{self.model_name}': Found a reference to {self.ref_model_name}{ref_model_version}, "
+            f"which is slated for deprecation on '{self.ref_model_deprecation_date}'. "
+        )
+
+        if self.ref_model_version and self.ref_model_version != self.ref_model_latest_version:
+            coda = (
+                f"A new version of '{self.ref_model_name}' is available. Try it out: "
+                f"{{{{ ref('{self.ref_model_package}', '{self.ref_model_name}', "
+                f"v='{self.ref_model_latest_version}') }}}}."
+            )
+            msg = msg + coda
+
+        return warning_tag(msg)
+
+
+class DeprecatedReference(WarnLevel):
+    def code(self) -> str:
+        return "I067"
+
+    def message(self) -> str:
+        ref_model_version = ".v" + self.ref_model_version if self.ref_model_version else ""
+        msg = (
+            f"While compiling '{self.model_name}': Found a reference to {self.ref_model_name}{ref_model_version}, "
+            f"which was deprecated on '{self.ref_model_deprecation_date}'. "
+        )
+
+        if self.ref_model_version and self.ref_model_version != self.ref_model_latest_version:
+            coda = (
+                f"A new version of '{self.ref_model_name}' is available. Migrate now: "
+                f"{{{{ ref('{self.ref_model_package}', '{self.ref_model_name}', "
+                f"v='{self.ref_model_latest_version}') }}}}."
+            )
+            msg = msg + coda
+
+        return warning_tag(msg)
+
+
+class UnsupportedConstraintMaterialization(WarnLevel):
+    def code(self) -> str:
+        return "I068"
+
+    def message(self) -> str:
+        msg = (
+            f"Constraint types are not supported for {self.materialized} materializations and will "
+            "be ignored.  Set 'warn_unsupported: false' on this constraint to ignore this warning."
+        )
+
+        return line_wrap_message(warning_tag(msg))
+
+
+class ParseInlineNodeError(ErrorLevel):
+    def code(self) -> str:
+        return "I069"
+
+    def message(self) -> str:
+        return "Error while parsing node: " + self.node_info.node_name + "\n" + self.exc
+
+
+class SemanticValidationFailure(WarnLevel):
+    def code(self) -> str:
+        return "I070"
+
+    def message(self) -> str:
+        return self.msg
+
+
+class UnversionedBreakingChange(WarnLevel):
+    def code(self) -> str:
+        return "I071"
+
+    def message(self) -> str:
+        reasons = "\n  - ".join(self.breaking_changes)
+
+        msg = (
+            f"Breaking change to contracted, unversioned model {self.model_name} ({self.model_file_path})"
+            "\nWhile comparing to previous project state, dbt detected a breaking change to an unversioned model."
+            f"\n  - {reasons}\n"
+        )
+
+        return warning_tag(msg)
+
+
+class WarnStateTargetEqual(WarnLevel):
+    def code(self) -> str:
+        return "I072"
+
+    def message(self) -> str:
+        return yellow(
+            f"Warning: The state and target directories are the same: '{self.state_path}'. "
+            f"This could lead to missing changes due to overwritten state including non-idempotent retries."
+        )
+
+
+class FreshnessConfigProblem(WarnLevel):
+    def code(self) -> str:
+        return "I073"
+
+    def message(self) -> str:
+        return self.msg
+
+
+class MicrobatchModelNoEventTimeInputs(WarnLevel):
+    def code(self) -> str:
+        return "I074"
+
+    def message(self) -> str:
+        msg = (
+            f"The microbatch model '{self.model_name}' has no 'ref' or 'source' input with an 'event_time' configuration. "
+            "\nThis means no filtering can be applied and can result in unexpected duplicate records in the resulting microbatch model."
+        )
+
+        return warning_tag(msg)
+
+
+class InvalidConcurrentBatchesConfig(WarnLevel):
+    def code(self) -> str:
+        return "I075"
+
+    def message(self) -> str:
+        maybe_plural_count_of_models = pluralize(self.num_models, "microbatch model")
+        description = f"Found {maybe_plural_count_of_models} with the `concurrent_batches` config set to true, but the {self.adapter_type} adapter does not support running batches concurrently. Batches will be run sequentially."
+        return line_wrap_message(warning_tag(description))
 
 
 # =======================================================
@@ -1532,90 +982,80 @@ class JinjaLogWarning(WarnLevel, pt.JinjaLogWarning):
 # =======================================================
 
 
-@dataclass
-class GitSparseCheckoutSubdirectory(DebugLevel, pt.GitSparseCheckoutSubdirectory):
-    def code(self):
+class GitSparseCheckoutSubdirectory(DebugLevel):
+    def code(self) -> str:
         return "M001"
 
     def message(self) -> str:
-        return f"  Subdirectory specified: {self.subdir}, using sparse checkout."
+        return f"Subdirectory specified: {self.subdir}, using sparse checkout."
 
 
-@dataclass
-class GitProgressCheckoutRevision(DebugLevel, pt.GitProgressCheckoutRevision):
-    def code(self):
+class GitProgressCheckoutRevision(DebugLevel):
+    def code(self) -> str:
         return "M002"
 
     def message(self) -> str:
-        return f"  Checking out revision {self.revision}."
+        return f"Checking out revision {self.revision}."
 
 
-@dataclass
-class GitProgressUpdatingExistingDependency(DebugLevel, pt.GitProgressUpdatingExistingDependency):
-    def code(self):
+class GitProgressUpdatingExistingDependency(DebugLevel):
+    def code(self) -> str:
         return "M003"
 
     def message(self) -> str:
         return f"Updating existing dependency {self.dir}."
 
 
-@dataclass
-class GitProgressPullingNewDependency(DebugLevel, pt.GitProgressPullingNewDependency):
-    def code(self):
+class GitProgressPullingNewDependency(DebugLevel):
+    def code(self) -> str:
         return "M004"
 
     def message(self) -> str:
         return f"Pulling new dependency {self.dir}."
 
 
-@dataclass
-class GitNothingToDo(DebugLevel, pt.GitNothingToDo):
-    def code(self):
+class GitNothingToDo(DebugLevel):
+    def code(self) -> str:
         return "M005"
 
     def message(self) -> str:
         return f"Already at {self.sha}, nothing to do."
 
 
-@dataclass
-class GitProgressUpdatedCheckoutRange(DebugLevel, pt.GitProgressUpdatedCheckoutRange):
-    def code(self):
+class GitProgressUpdatedCheckoutRange(DebugLevel):
+    def code(self) -> str:
         return "M006"
 
     def message(self) -> str:
-        return f"  Updated checkout from {self.start_sha} to {self.end_sha}."
+        return f"Updated checkout from {self.start_sha} to {self.end_sha}."
 
 
-@dataclass
-class GitProgressCheckedOutAt(DebugLevel, pt.GitProgressCheckedOutAt):
-    def code(self):
+class GitProgressCheckedOutAt(DebugLevel):
+    def code(self) -> str:
         return "M007"
 
     def message(self) -> str:
-        return f"  Checked out at {self.end_sha}."
+        return f"Checked out at {self.end_sha}."
 
 
-@dataclass
-class RegistryProgressGETRequest(DebugLevel, pt.RegistryProgressGETRequest):
-    def code(self):
+class RegistryProgressGETRequest(DebugLevel):
+    def code(self) -> str:
         return "M008"
 
     def message(self) -> str:
         return f"Making package registry request: GET {self.url}"
 
 
-@dataclass
-class RegistryProgressGETResponse(DebugLevel, pt.RegistryProgressGETResponse):
-    def code(self):
+class RegistryProgressGETResponse(DebugLevel):
+    def code(self) -> str:
         return "M009"
 
     def message(self) -> str:
         return f"Response from registry: GET {self.url} {self.resp_code}"
 
 
-@dataclass
-class SelectorReportInvalidSelector(InfoLevel, pt.SelectorReportInvalidSelector):
-    def code(self):
+class SelectorReportInvalidSelector(InfoLevel):
+    def code(self) -> str:
         return "M010"
 
     def message(self) -> str:
@@ -1625,140 +1065,89 @@ class SelectorReportInvalidSelector(InfoLevel, pt.SelectorReportInvalidSelector)
         )
 
 
-@dataclass
-class JinjaLogInfo(InfoLevel, EventStringFunctor, pt.JinjaLogInfo):
-    def code(self):
-        return "M011"
-
-    def message(self) -> str:
-        # This is for the log method used in macros so msg cannot be built here
-        return self.msg
-
-
-@dataclass
-class JinjaLogDebug(DebugLevel, EventStringFunctor, pt.JinjaLogDebug):
-    def code(self):
-        return "M012"
-
-    def message(self) -> str:
-        # This is for the log method used in macros so msg cannot be built here
-        return self.msg
-
-
-@dataclass
-class DepsNoPackagesFound(InfoLevel, pt.DepsNoPackagesFound):
-    def code(self):
+class DepsNoPackagesFound(InfoLevel):
+    def code(self) -> str:
         return "M013"
 
     def message(self) -> str:
         return "Warning: No packages were found in packages.yml"
 
 
-@dataclass
-class DepsStartPackageInstall(InfoLevel, pt.DepsStartPackageInstall):
-    def code(self):
+class DepsStartPackageInstall(InfoLevel):
+    def code(self) -> str:
         return "M014"
 
     def message(self) -> str:
         return f"Installing {self.package_name}"
 
 
-@dataclass
-class DepsInstallInfo(InfoLevel, pt.DepsInstallInfo):
-    def code(self):
+class DepsInstallInfo(InfoLevel):
+    def code(self) -> str:
         return "M015"
 
     def message(self) -> str:
-        return f"  Installed from {self.version_name}"
+        return f"Installed from {self.version_name}"
 
 
-@dataclass
-class DepsUpdateAvailable(InfoLevel, pt.DepsUpdateAvailable):
-    def code(self):
+class DepsUpdateAvailable(InfoLevel):
+    def code(self) -> str:
         return "M016"
 
     def message(self) -> str:
-        return f"  Updated version available: {self.version_latest}"
+        return f"Updated version available: {self.version_latest}"
 
 
-@dataclass
-class DepsUpToDate(InfoLevel, pt.DepsUpToDate):
-    def code(self):
+class DepsUpToDate(InfoLevel):
+    def code(self) -> str:
         return "M017"
 
     def message(self) -> str:
-        return "  Up to date!"
+        return "Up to date!"
 
 
-@dataclass
-class DepsListSubdirectory(InfoLevel, pt.DepsListSubdirectory):
-    def code(self):
+class DepsListSubdirectory(InfoLevel):
+    def code(self) -> str:
         return "M018"
 
     def message(self) -> str:
-        return f"   and subdirectory {self.subdirectory}"
+        return f"and subdirectory {self.subdirectory}"
 
 
-@dataclass
-class DepsNotifyUpdatesAvailable(InfoLevel, pt.DepsNotifyUpdatesAvailable):
-    def code(self):
+class DepsNotifyUpdatesAvailable(InfoLevel):
+    def code(self) -> str:
         return "M019"
 
     def message(self) -> str:
-        return "Updates available for packages: {} \
-                \nUpdate your versions in packages.yml, then run dbt deps".format(
-            self.packages.value
-        )
+        return f"Updates available for packages: {self.packages} \
+                \nUpdate your versions in packages.yml, then run dbt deps"
 
 
-@dataclass
-class RetryExternalCall(DebugLevel, pt.RetryExternalCall):
-    def code(self):
-        return "M020"
-
-    def message(self) -> str:
-        return f"Retrying external call. Attempt: {self.attempt} Max attempts: {self.max}"
-
-
-@dataclass
-class RecordRetryException(DebugLevel, pt.RecordRetryException):
-    def code(self):
-        return "M021"
-
-    def message(self) -> str:
-        return f"External call exception: {self.exc}"
-
-
-@dataclass
-class RegistryIndexProgressGETRequest(DebugLevel, pt.RegistryIndexProgressGETRequest):
-    def code(self):
+class RegistryIndexProgressGETRequest(DebugLevel):
+    def code(self) -> str:
         return "M022"
 
     def message(self) -> str:
         return f"Making package index registry request: GET {self.url}"
 
 
-@dataclass
-class RegistryIndexProgressGETResponse(DebugLevel, pt.RegistryIndexProgressGETResponse):
-    def code(self):
+class RegistryIndexProgressGETResponse(DebugLevel):
+    def code(self) -> str:
         return "M023"
 
     def message(self) -> str:
         return f"Response from registry index: GET {self.url} {self.resp_code}"
 
 
-@dataclass
-class RegistryResponseUnexpectedType(DebugLevel, pt.RegistryResponseUnexpectedType):
-    def code(self):
+class RegistryResponseUnexpectedType(DebugLevel):
+    def code(self) -> str:
         return "M024"
 
     def message(self) -> str:
         return f"Response was None: {self.response}"
 
 
-@dataclass
-class RegistryResponseMissingTopKeys(DebugLevel, pt.RegistryResponseMissingTopKeys):
-    def code(self):
+class RegistryResponseMissingTopKeys(DebugLevel):
+    def code(self) -> str:
         return "M025"
 
     def message(self) -> str:
@@ -1766,9 +1155,8 @@ class RegistryResponseMissingTopKeys(DebugLevel, pt.RegistryResponseMissingTopKe
         return f"Response missing top level keys: {self.response}"
 
 
-@dataclass
-class RegistryResponseMissingNestedKeys(DebugLevel, pt.RegistryResponseMissingNestedKeys):
-    def code(self):
+class RegistryResponseMissingNestedKeys(DebugLevel):
+    def code(self) -> str:
         return "M026"
 
     def message(self) -> str:
@@ -1776,9 +1164,8 @@ class RegistryResponseMissingNestedKeys(DebugLevel, pt.RegistryResponseMissingNe
         return f"Response missing nested keys: {self.response}"
 
 
-@dataclass
-class RegistryResponseExtraNestedKeys(DebugLevel, pt.RegistryResponseExtraNestedKeys):
-    def code(self):
+class RegistryResponseExtraNestedKeys(DebugLevel):
+    def code(self) -> str:
         return "M027"
 
     def message(self) -> str:
@@ -1786,18 +1173,16 @@ class RegistryResponseExtraNestedKeys(DebugLevel, pt.RegistryResponseExtraNested
         return f"Response contained inconsistent keys: {self.response}"
 
 
-@dataclass
-class DepsSetDownloadDirectory(DebugLevel, pt.DepsSetDownloadDirectory):
-    def code(self):
+class DepsSetDownloadDirectory(DebugLevel):
+    def code(self) -> str:
         return "M028"
 
     def message(self) -> str:
         return f"Set downloads directory='{self.path}'"
 
 
-@dataclass
-class DepsUnpinned(WarnLevel, pt.DepsUnpinned):
-    def code(self):
+class DepsUnpinned(WarnLevel):
+    def code(self) -> str:
         return "M029"
 
     def message(self) -> str:
@@ -1815,13 +1200,57 @@ class DepsUnpinned(WarnLevel, pt.DepsUnpinned):
         return yellow(f"WARNING: {msg}")
 
 
-@dataclass
-class NoNodesForSelectionCriteria(WarnLevel, pt.NoNodesForSelectionCriteria):
-    def code(self):
+class NoNodesForSelectionCriteria(WarnLevel):
+    def code(self) -> str:
         return "M030"
 
     def message(self) -> str:
-        return f"The selection criterion '{self.spec_raw}' does not match any nodes"
+        return f"The selection criterion '{self.spec_raw}' does not match any enabled nodes"
+
+
+class DepsLockUpdating(InfoLevel):
+    def code(self):
+        return "M031"
+
+    def message(self) -> str:
+        return f"Updating lock file in file path: {self.lock_filepath}"
+
+
+class DepsAddPackage(InfoLevel):
+    def code(self):
+        return "M032"
+
+    def message(self) -> str:
+        return f"Added new package {self.package_name}@{self.version} to {self.packages_filepath}"
+
+
+class DepsFoundDuplicatePackage(InfoLevel):
+    def code(self):
+        return "M033"
+
+    def message(self) -> str:
+        return f"Found duplicate package in packages.yml, removing: {self.removed_package}"
+
+
+class DepsScrubbedPackageName(WarnLevel):
+    def code(self):
+        return "M035"
+
+    def message(self) -> str:
+        return f"Detected secret env var in {self.package_name}. dbt will write a scrubbed representation to the lock file. This will cause issues with subsequent 'dbt deps' using the lock file, requiring 'dbt deps --upgrade'"
+
+
+# =======================================================
+# P - Artifacts
+# =======================================================
+
+
+class ArtifactWritten(DebugLevel):
+    def code(self):
+        return "P001"
+
+    def message(self) -> str:
+        return f"Wrote artifact {self.artifact_type} to {self.artifact_path}"
 
 
 # =======================================================
@@ -1829,69 +1258,56 @@ class NoNodesForSelectionCriteria(WarnLevel, pt.NoNodesForSelectionCriteria):
 # =======================================================
 
 
-@dataclass
-class RunningOperationCaughtError(ErrorLevel, pt.RunningOperationCaughtError):
-    def code(self):
+class RunningOperationCaughtError(ErrorLevel):
+    def code(self) -> str:
         return "Q001"
 
     def message(self) -> str:
         return f"Encountered an error while running operation: {self.exc}"
 
 
-@dataclass
-class CompileComplete(InfoLevel, pt.CompileComplete):
-    def code(self):
+class CompileComplete(InfoLevel):
+    def code(self) -> str:
         return "Q002"
 
     def message(self) -> str:
         return "Done."
 
 
-@dataclass
-class FreshnessCheckComplete(InfoLevel, pt.FreshnessCheckComplete):
-    def code(self):
+class FreshnessCheckComplete(InfoLevel):
+    def code(self) -> str:
         return "Q003"
 
     def message(self) -> str:
         return "Done."
 
 
-@dataclass
-class SeedHeader(InfoLevel, pt.SeedHeader):
-    def code(self):
+class SeedHeader(InfoLevel):
+    def code(self) -> str:
         return "Q004"
 
     def message(self) -> str:
         return self.header
 
 
-@dataclass
-class SeedHeaderSeparator(InfoLevel, pt.SeedHeaderSeparator):
-    def code(self):
-        return "Q005"
-
-    def message(self) -> str:
-        return "-" * self.len_header
-
-
-@dataclass
-class SQLRunnerException(DebugLevel, pt.SQLRunnerException):  # noqa
-    def code(self):
+class SQLRunnerException(DebugLevel):
+    def code(self) -> str:
         return "Q006"
 
     def message(self) -> str:
         return f"Got an exception: {self.exc}"
 
 
-@dataclass
-class LogTestResult(DynamicLevel, pt.LogTestResult):
-    def code(self):
+class LogTestResult(DynamicLevel):
+    def code(self) -> str:
         return "Q007"
 
     def message(self) -> str:
         if self.status == "error":
             info = "ERROR"
-            status = red(info)
+            status = red(
+                info,
+            )
         elif self.status == "pass":
             info = "PASS"
             status = green(info)
@@ -1915,23 +1331,30 @@ class LogTestResult(DynamicLevel, pt.LogTestResult):
     def status_to_level(cls, status):
         # The statuses come from TestStatus
         level_lookup = {
-            "fail": "error",
-            "pass": "info",
-            "warn": "warn",
-            "error": "error",
+            "fail": EventLevel.ERROR,
+            "pass": EventLevel.INFO,
+            "warn": EventLevel.WARN,
+            "error": EventLevel.ERROR,
         }
         if status in level_lookup:
             return level_lookup[status]
         else:
-            return "info"
+            return EventLevel.INFO
 
 
-# Skipped Q008, Q009, Q010
+class LogNodeResult(DynamicLevel):
+    def code(self) -> str:
+        return "Q008"
+
+    def message(self) -> str:
+        return self.msg
 
 
-@dataclass
-class LogStartLine(InfoLevel, pt.LogStartLine):  # noqa
-    def code(self):
+# Skipped Q009, Q010
+
+
+class LogStartLine(InfoLevel):
+    def code(self) -> str:
         return "Q011"
 
     def message(self) -> str:
@@ -1939,15 +1362,17 @@ class LogStartLine(InfoLevel, pt.LogStartLine):  # noqa
         return format_fancy_output_line(msg=msg, status="RUN", index=self.index, total=self.total)
 
 
-@dataclass
-class LogModelResult(DynamicLevel, pt.LogModelResult):
-    def code(self):
+class LogModelResult(DynamicLevel):
+    def code(self) -> str:
         return "Q012"
 
     def message(self) -> str:
         if self.status == "error":
             info = "ERROR creating"
             status = red(self.status.upper())
+        elif "PARTIAL SUCCESS" in self.status:
+            info = "PARTIALLY created"
+            status = yellow(self.status.upper())
         else:
             info = "OK created"
             status = green(self.status)
@@ -1965,9 +1390,8 @@ class LogModelResult(DynamicLevel, pt.LogModelResult):
 # Skipped Q013, Q014
 
 
-@dataclass
-class LogSnapshotResult(DynamicLevel, pt.LogSnapshotResult):
-    def code(self):
+class LogSnapshotResult(DynamicLevel):
+    def code(self) -> str:
         return "Q015"
 
     def message(self) -> str:
@@ -1976,7 +1400,7 @@ class LogSnapshotResult(DynamicLevel, pt.LogSnapshotResult):
             status = red(self.status.upper())
         else:
             info = "OK snapshotted"
-            status = green(self.status)
+            status = green(self.result_message)
 
         msg = "{info} {description}".format(info=info, description=self.description, **self.cfg)
         return format_fancy_output_line(
@@ -1988,9 +1412,8 @@ class LogSnapshotResult(DynamicLevel, pt.LogSnapshotResult):
         )
 
 
-@dataclass
-class LogSeedResult(DynamicLevel, pt.LogSeedResult):
-    def code(self):
+class LogSeedResult(DynamicLevel):
+    def code(self) -> str:
         return "Q016"
 
     def message(self) -> str:
@@ -2013,9 +1436,8 @@ class LogSeedResult(DynamicLevel, pt.LogSeedResult):
 # Skipped Q017
 
 
-@dataclass
-class LogFreshnessResult(DynamicLevel, pt.LogFreshnessResult):
-    def code(self):
+class LogFreshnessResult(DynamicLevel):
+    def code(self) -> str:
         return "Q018"
 
     def message(self) -> str:
@@ -2043,61 +1465,72 @@ class LogFreshnessResult(DynamicLevel, pt.LogFreshnessResult):
     @classmethod
     def status_to_level(cls, status):
         # The statuses come from FreshnessStatus
+        # TODO should this return EventLevel enum instead?
         level_lookup = {
-            "runtime error": "error",
-            "pass": "info",
-            "warn": "warn",
-            "error": "error",
+            "runtime error": EventLevel.ERROR,
+            "pass": EventLevel.INFO,
+            "warn": EventLevel.WARN,
+            "error": EventLevel.ERROR,
         }
         if status in level_lookup:
             return level_lookup[status]
         else:
-            return "info"
+            return EventLevel.INFO
 
 
-# Skipped Q019, Q020, Q021
+class LogNodeNoOpResult(InfoLevel):
+    def code(self) -> str:
+        return "Q019"
+
+    def message(self) -> str:
+        msg = f"NO-OP {self.description}"
+        return format_fancy_output_line(
+            msg=msg,
+            status=yellow("NO-OP"),
+            index=self.index,
+            total=self.total,
+            execution_time=self.execution_time,
+        )
 
 
-@dataclass
-class LogCancelLine(ErrorLevel, pt.LogCancelLine):
-    def code(self):
+# Skipped Q020, Q021
+
+
+class LogCancelLine(ErrorLevel):
+    def code(self) -> str:
         return "Q022"
 
     def message(self) -> str:
-        msg = "CANCEL query {}".format(self.conn_name)
+        msg = f"CANCEL query {self.conn_name}"
         return format_fancy_output_line(msg=msg, status=red("CANCEL"), index=None, total=None)
 
 
-@dataclass
-class DefaultSelector(InfoLevel, pt.DefaultSelector):
-    def code(self):
+class DefaultSelector(InfoLevel):
+    def code(self) -> str:
         return "Q023"
 
     def message(self) -> str:
         return f"Using default selector {self.name}"
 
 
-@dataclass
-class NodeStart(DebugLevel, pt.NodeStart):
-    def code(self):
+class NodeStart(DebugLevel):
+    def code(self) -> str:
         return "Q024"
 
     def message(self) -> str:
-        return f"Began running node {self.unique_id}"
+        return f"Began running node {self.node_info.unique_id}"
 
 
-@dataclass
-class NodeFinished(DebugLevel, pt.NodeFinished):
-    def code(self):
+class NodeFinished(DebugLevel):
+    def code(self) -> str:
         return "Q025"
 
     def message(self) -> str:
-        return f"Finished running node {self.unique_id}"
+        return f"Finished running node {self.node_info.unique_id}"
 
 
-@dataclass
-class QueryCancelationUnsupported(InfoLevel, pt.QueryCancelationUnsupported):
-    def code(self):
+class QueryCancelationUnsupported(InfoLevel):
+    def code(self) -> str:
         return "Q026"
 
     def message(self) -> str:
@@ -2109,54 +1542,40 @@ class QueryCancelationUnsupported(InfoLevel, pt.QueryCancelationUnsupported):
         return yellow(msg)
 
 
-@dataclass
-class ConcurrencyLine(InfoLevel, pt.ConcurrencyLine):  # noqa
-    def code(self):
+class ConcurrencyLine(InfoLevel):
+    def code(self) -> str:
         return "Q027"
 
     def message(self) -> str:
         return f"Concurrency: {self.num_threads} threads (target='{self.target_name}')"
 
 
-@dataclass
-class CompilingNode(DebugLevel, pt.CompilingNode):
-    def code(self):
-        return "Q028"
-
-    def message(self) -> str:
-        return f"Compiling {self.unique_id}"
-
-
-@dataclass
-class WritingInjectedSQLForNode(DebugLevel, pt.WritingInjectedSQLForNode):
-    def code(self):
+class WritingInjectedSQLForNode(DebugLevel):
+    def code(self) -> str:
         return "Q029"
 
     def message(self) -> str:
-        return f'Writing injected SQL for node "{self.unique_id}"'
+        return f'Writing injected SQL for node "{self.node_info.unique_id}"'
 
 
-@dataclass
-class NodeCompiling(DebugLevel, pt.NodeCompiling):
-    def code(self):
+class NodeCompiling(DebugLevel):
+    def code(self) -> str:
         return "Q030"
 
     def message(self) -> str:
-        return f"Began compiling node {self.unique_id}"
+        return f"Began compiling node {self.node_info.unique_id}"
 
 
-@dataclass
-class NodeExecuting(DebugLevel, pt.NodeExecuting):
-    def code(self):
+class NodeExecuting(DebugLevel):
+    def code(self) -> str:
         return "Q031"
 
     def message(self) -> str:
-        return f"Began executing node {self.unique_id}"
+        return f"Began executing node {self.node_info.unique_id}"
 
 
-@dataclass
-class LogHookStartLine(InfoLevel, pt.LogHookStartLine):  # noqa
-    def code(self):
+class LogHookStartLine(InfoLevel):
+    def code(self) -> str:
         return "Q032"
 
     def message(self) -> str:
@@ -2166,16 +1585,25 @@ class LogHookStartLine(InfoLevel, pt.LogHookStartLine):  # noqa
         )
 
 
-@dataclass
-class LogHookEndLine(InfoLevel, pt.LogHookEndLine):  # noqa
-    def code(self):
+class LogHookEndLine(InfoLevel):
+    def code(self) -> str:
         return "Q033"
 
     def message(self) -> str:
-        msg = "OK hook: {}".format(self.statement)
+        if self.status == "success":
+            info = "OK"
+            status = green(info)
+        elif self.status == "skipped":
+            info = "SKIP"
+            status = yellow(info)
+        else:
+            info = "ERROR"
+            status = red(info)
+        msg = f"{info} hook: {self.statement}"
+
         return format_fancy_output_line(
             msg=msg,
-            status=green(self.status),
+            status=status,
             index=self.index,
             total=self.total,
             execution_time=self.execution_time,
@@ -2183,13 +1611,13 @@ class LogHookEndLine(InfoLevel, pt.LogHookEndLine):  # noqa
         )
 
 
-@dataclass
-class SkippingDetails(InfoLevel, pt.SkippingDetails):
-    def code(self):
+class SkippingDetails(InfoLevel):
+    def code(self) -> str:
         return "Q034"
 
     def message(self) -> str:
-        if self.resource_type in NodeType.refable():
+        # ToDo: move to core or figure out NodeType
+        if self.resource_type in ["model", "seed", "snapshot"]:
             msg = f"SKIP relation {self.schema}.{self.node_name}"
         else:
             msg = f"SKIP {self.resource_type} {self.node_name}"
@@ -2198,40 +1626,151 @@ class SkippingDetails(InfoLevel, pt.SkippingDetails):
         )
 
 
-@dataclass
-class NothingToDo(WarnLevel, pt.NothingToDo):
-    def code(self):
+class NothingToDo(WarnLevel):
+    def code(self) -> str:
         return "Q035"
 
     def message(self) -> str:
         return "Nothing to do. Try checking your model configs and model specification args"
 
 
-@dataclass
-class RunningOperationUncaughtError(ErrorLevel, pt.RunningOperationUncaughtError):
-    def code(self):
+class RunningOperationUncaughtError(ErrorLevel):
+    def code(self) -> str:
         return "Q036"
 
     def message(self) -> str:
         return f"Encountered an error while running operation: {self.exc}"
 
 
-@dataclass
-class EndRunResult(DebugLevel, pt.EndRunResult):
-    def code(self):
+class EndRunResult(DebugLevel):
+    def code(self) -> str:
         return "Q037"
 
     def message(self) -> str:
         return "Command end result"
 
 
-@dataclass
-class NoNodesSelected(WarnLevel, pt.NoNodesSelected):
-    def code(self):
+class NoNodesSelected(WarnLevel):
+    def code(self) -> str:
         return "Q038"
 
     def message(self) -> str:
         return "No nodes selected!"
+
+
+class CommandCompleted(DebugLevel):
+    def code(self) -> str:
+        return "Q039"
+
+    def message(self) -> str:
+        status = "succeeded" if self.success else "failed"
+        completed_at = timestamp_to_datetime_string(self.completed_at)
+        return f"Command `{self.command}` {status} at {completed_at} after {self.elapsed:0.2f} seconds"
+
+
+class ShowNode(InfoLevel):
+    def code(self) -> str:
+        return "Q041"
+
+    def message(self) -> str:
+        if self.output_format == "json":
+            if self.is_inline:
+                return json.dumps({"show": json.loads(self.preview)}, indent=2)
+            else:
+                return json.dumps(
+                    {"node": self.node_name, "show": json.loads(self.preview)}, indent=2
+                )
+        else:
+            if self.quiet:
+                return self.preview
+            elif self.is_inline:
+                return f"Previewing inline node:\n{self.preview}"
+            else:
+                return f"Previewing node '{self.node_name}':\n{self.preview}"
+
+
+class CompiledNode(InfoLevel):
+    def code(self) -> str:
+        return "Q042"
+
+    def message(self) -> str:
+        if self.output_format == "json":
+            if self.is_inline:
+                return json.dumps({"compiled": self.compiled}, indent=2)
+            else:
+                return json.dumps({"node": self.node_name, "compiled": self.compiled}, indent=2)
+        else:
+            if self.quiet:
+                return self.compiled
+            elif self.is_inline:
+                return f"Compiled inline node is:\n{self.compiled}"
+            else:
+                return f"Compiled node '{self.node_name}' is:\n{self.compiled}"
+
+
+class SnapshotTimestampWarning(WarnLevel):
+    def code(self) -> str:
+        return "Q043"
+
+    def message(self) -> str:
+        return (
+            f"Data type of snapshot table timestamp columns ({self.snapshot_time_data_type}) "
+            f"doesn't match derived column 'updated_at' ({self.updated_at_data_type}). "
+            "Please update snapshot config 'updated_at'."
+        )
+
+
+class MicrobatchExecutionDebug(DebugLevel):
+    def code(self) -> str:
+        return "Q044"
+
+    def message(self) -> str:
+        return self.msg
+
+
+class LogStartBatch(InfoLevel):
+    def code(self) -> str:
+        return "Q045"
+
+    def message(self) -> str:
+        msg = f"START {self.description}"
+
+        # TODO update common so that we can append "batch" in `format_fancy_output_line`
+        formatted = format_fancy_output_line(
+            msg=msg,
+            status="RUN",
+            index=self.batch_index,
+            total=self.total_batches,
+        )
+        return f"Batch {formatted}"
+
+
+class LogBatchResult(DynamicLevel):
+    def code(self) -> str:
+        return "Q046"
+
+    def message(self) -> str:
+        if self.status == "error":
+            info = "ERROR creating"
+            status = red(self.status.upper())
+        elif self.status == "skipped":
+            info = "SKIP"
+            status = yellow(self.status.upper())
+        else:
+            info = "OK created"
+            status = green(self.status)
+
+        msg = f"{info} {self.description}"
+
+        # TODO update common so that we can append "batch" in `format_fancy_output_line`
+        formatted = format_fancy_output_line(
+            msg=msg,
+            status=status,
+            index=self.batch_index,
+            total=self.total_batches,
+            execution_time=self.execution_time,
+        )
+        return f"Batch {formatted}"
 
 
 # =======================================================
@@ -2241,57 +1780,50 @@ class NoNodesSelected(WarnLevel, pt.NoNodesSelected):
 # Skipped W001
 
 
-@dataclass
-class CatchableExceptionOnRun(DebugLevel, pt.CatchableExceptionOnRun):  # noqa
-    def code(self):
+class CatchableExceptionOnRun(DebugLevel):
+    def code(self) -> str:
         return "W002"
 
     def message(self) -> str:
         return str(self.exc)
 
 
-@dataclass
-class InternalExceptionOnRun(DebugLevel, pt.InternalExceptionOnRun):
-    def code(self):
+class InternalErrorOnRun(DebugLevel):
+    def code(self) -> str:
         return "W003"
 
     def message(self) -> str:
-        prefix = "Internal error executing {}".format(self.build_path)
+        prefix = f"Internal error executing {self.build_path}"
 
         internal_error_string = """This is an error in dbt. Please try again. If \
 the error persists, open an issue at https://github.com/dbt-labs/dbt-core
 """.strip()
 
-        return "{prefix}\n{error}\n\n{note}".format(
-            prefix=red(prefix), error=str(self.exc).strip(), note=internal_error_string
-        )
+        return f"{red(prefix)}\n" f"{str(self.exc).strip()}\n\n" f"{internal_error_string}"
 
 
-@dataclass
-class GenericExceptionOnRun(ErrorLevel, pt.GenericExceptionOnRun):
-    def code(self):
+class GenericExceptionOnRun(ErrorLevel):
+    def code(self) -> str:
         return "W004"
 
     def message(self) -> str:
         node_description = self.build_path
         if node_description is None:
             node_description = self.unique_id
-        prefix = "Unhandled error while executing {}".format(node_description)
-        return "{prefix}\n{error}".format(prefix=red(prefix), error=str(self.exc).strip())
+        prefix = f"Unhandled error while executing {node_description}"
+        return f"{red(prefix)}\n{str(self.exc).strip()}"
 
 
-@dataclass
-class NodeConnectionReleaseError(DebugLevel, pt.NodeConnectionReleaseError):  # noqa
-    def code(self):
+class NodeConnectionReleaseError(DebugLevel):
+    def code(self) -> str:
         return "W005"
 
     def message(self) -> str:
-        return "Error releasing connection for node {}: {!s}".format(self.node_name, self.exc)
+        return f"Error releasing connection for node {self.node_name}: {str(self.exc)}"
 
 
-@dataclass
-class FoundStats(InfoLevel, pt.FoundStats):
-    def code(self):
+class FoundStats(InfoLevel):
+    def code(self) -> str:
         return "W006"
 
     def message(self) -> str:
@@ -2303,151 +1835,93 @@ class FoundStats(InfoLevel, pt.FoundStats):
 # =======================================================
 
 
-@dataclass
-class MainKeyboardInterrupt(InfoLevel, pt.MainKeyboardInterrupt):
-    def code(self):
+class MainKeyboardInterrupt(InfoLevel):
+    def code(self) -> str:
         return "Z001"
 
     def message(self) -> str:
         return "ctrl-c"
 
 
-@dataclass
-class MainEncounteredError(ErrorLevel, pt.MainEncounteredError):  # noqa
-    def code(self):
+class MainEncounteredError(ErrorLevel):
+    def code(self) -> str:
         return "Z002"
 
     def message(self) -> str:
         return f"Encountered an error:\n{self.exc}"
 
 
-@dataclass
-class MainStackTrace(ErrorLevel, pt.MainStackTrace):
-    def code(self):
+class MainStackTrace(ErrorLevel):
+    def code(self) -> str:
         return "Z003"
 
     def message(self) -> str:
         return self.stack_trace
 
 
-@dataclass
-class SystemErrorRetrievingModTime(ErrorLevel, pt.SystemErrorRetrievingModTime):
-    def code(self):
-        return "Z004"
-
-    def message(self) -> str:
-        return f"Error retrieving modification time for file {self.path}"
+# Skipped Z004
 
 
-@dataclass
-class SystemCouldNotWrite(DebugLevel, pt.SystemCouldNotWrite):
-    def code(self):
-        return "Z005"
-
-    def message(self) -> str:
-        return (
-            f"Could not write to path {self.path}({len(self.path)} characters): "
-            f"{self.reason}\nexception: {self.exc}"
-        )
-
-
-@dataclass
-class SystemExecutingCmd(DebugLevel, pt.SystemExecutingCmd):
-    def code(self):
-        return "Z006"
-
-    def message(self) -> str:
-        return f'Executing "{" ".join(self.cmd)}"'
-
-
-@dataclass
-class SystemStdOutMsg(DebugLevel, pt.SystemStdOutMsg):
-    def code(self):
-        return "Z007"
-
-    def message(self) -> str:
-        return f'STDOUT: "{str(self.bmsg)}"'
-
-
-@dataclass
-class SystemStdErrMsg(DebugLevel, pt.SystemStdErrMsg):
-    def code(self):
-        return "Z008"
-
-    def message(self) -> str:
-        return f'STDERR: "{str(self.bmsg)}"'
-
-
-@dataclass
-class SystemReportReturnCode(DebugLevel, pt.SystemReportReturnCode):
-    def code(self):
-        return "Z009"
-
-    def message(self) -> str:
-        return f"command return code={self.returncode}"
-
-
-@dataclass
-class TimingInfoCollected(DebugLevel, pt.TimingInfoCollected):
-    def code(self):
+class TimingInfoCollected(DebugLevel):
+    def code(self) -> str:
         return "Z010"
 
     def message(self) -> str:
-        return "finished collecting timing info"
+        started_at = timestamp_to_datetime_string(self.timing_info.started_at)
+        completed_at = timestamp_to_datetime_string(self.timing_info.completed_at)
+        return f"Timing info for {self.node_info.unique_id} ({self.timing_info.name}): {started_at} => {completed_at}"
 
 
 # This prints the stack trace at the debug level while allowing just the nice exception message
 # at the error level - or whatever other level chosen.  Used in multiple places.
-@dataclass
-class LogDebugStackTrace(DebugLevel, pt.LogDebugStackTrace):  # noqa
-    def code(self):
+
+
+class LogDebugStackTrace(DebugLevel):
+    def code(self) -> str:
         return "Z011"
 
     def message(self) -> str:
-        return ""
+        return f"{self.exc_info}"
 
 
 # We don't write "clean" events to the log, because the clean command
 # may have removed the log directory.
-@dataclass
-class CheckCleanPath(InfoLevel, NoFile, pt.CheckCleanPath):
-    def code(self):
+
+
+class CheckCleanPath(InfoLevel):
+    def code(self) -> str:
         return "Z012"
 
     def message(self) -> str:
         return f"Checking {self.path}/*"
 
 
-@dataclass
-class ConfirmCleanPath(InfoLevel, NoFile, pt.ConfirmCleanPath):
-    def code(self):
+class ConfirmCleanPath(InfoLevel):
+    def code(self) -> str:
         return "Z013"
 
     def message(self) -> str:
         return f"Cleaned {self.path}/*"
 
 
-@dataclass
-class ProtectedCleanPath(InfoLevel, NoFile, pt.ProtectedCleanPath):
-    def code(self):
+class ProtectedCleanPath(InfoLevel):
+    def code(self) -> str:
         return "Z014"
 
     def message(self) -> str:
         return f"ERROR: not cleaning {self.path}/* because it is protected"
 
 
-@dataclass
-class FinishedCleanPaths(InfoLevel, NoFile, pt.FinishedCleanPaths):
-    def code(self):
+class FinishedCleanPaths(InfoLevel):
+    def code(self) -> str:
         return "Z015"
 
     def message(self) -> str:
         return "Finished cleaning all paths."
 
 
-@dataclass
-class OpenCommand(InfoLevel, pt.OpenCommand):
-    def code(self):
+class OpenCommand(InfoLevel):
+    def code(self) -> str:
         return "Z016"
 
     def message(self) -> str:
@@ -2458,45 +1932,8 @@ class OpenCommand(InfoLevel, pt.OpenCommand):
         return msg
 
 
-@dataclass
-class EmptyLine(InfoLevel, pt.EmptyLine):
-    def code(self):
-        return "Z017"
-
-    def message(self) -> str:
-        return ""
-
-
-@dataclass
-class ServingDocsPort(InfoLevel, pt.ServingDocsPort):
-    def code(self):
-        return "Z018"
-
-    def message(self) -> str:
-        return f"Serving docs at {self.address}:{self.port}"
-
-
-@dataclass
-class ServingDocsAccessInfo(InfoLevel, pt.ServingDocsAccessInfo):
-    def code(self):
-        return "Z019"
-
-    def message(self) -> str:
-        return f"To access from your browser, navigate to:  http://localhost:{self.port}"
-
-
-@dataclass
-class ServingDocsExitInfo(InfoLevel, pt.ServingDocsExitInfo):
-    def code(self):
-        return "Z020"
-
-    def message(self) -> str:
-        return "Press Ctrl+C to exit."
-
-
-@dataclass
-class RunResultWarning(WarnLevel, pt.RunResultWarning):
-    def code(self):
+class RunResultWarning(WarnLevel):
+    def code(self) -> str:
         return "Z021"
 
     def message(self) -> str:
@@ -2504,9 +1941,8 @@ class RunResultWarning(WarnLevel, pt.RunResultWarning):
         return yellow(f"{info} in {self.resource_type} {self.node_name} ({self.path})")
 
 
-@dataclass
-class RunResultFailure(ErrorLevel, pt.RunResultFailure):
-    def code(self):
+class RunResultFailure(ErrorLevel):
+    def code(self) -> str:
         return "Z022"
 
     def message(self) -> str:
@@ -2514,19 +1950,19 @@ class RunResultFailure(ErrorLevel, pt.RunResultFailure):
         return red(f"{info} in {self.resource_type} {self.node_name} ({self.path})")
 
 
-@dataclass
-class StatsLine(InfoLevel, pt.StatsLine):
-    def code(self):
+class StatsLine(InfoLevel):
+    def code(self) -> str:
         return "Z023"
 
     def message(self) -> str:
-        stats_line = "Done. PASS={pass} WARN={warn} ERROR={error} SKIP={skip} TOTAL={total}"
+        stats_line = (
+            "Done. PASS={pass} WARN={warn} ERROR={error} SKIP={skip} NO-OP={noop} TOTAL={total}"
+        )
         return stats_line.format(**self.stats)
 
 
-@dataclass
-class RunResultError(ErrorLevel, EventStringFunctor, pt.RunResultError):
-    def code(self):
+class RunResultError(ErrorLevel):
+    def code(self) -> str:
         return "Z024"
 
     def message(self) -> str:
@@ -2534,27 +1970,24 @@ class RunResultError(ErrorLevel, EventStringFunctor, pt.RunResultError):
         return f"  {self.msg}"
 
 
-@dataclass
-class RunResultErrorNoMessage(ErrorLevel, pt.RunResultErrorNoMessage):
-    def code(self):
+class RunResultErrorNoMessage(ErrorLevel):
+    def code(self) -> str:
         return "Z025"
 
     def message(self) -> str:
         return f"  Status: {self.status}"
 
 
-@dataclass
-class SQLCompiledPath(InfoLevel, pt.SQLCompiledPath):
-    def code(self):
+class SQLCompiledPath(InfoLevel):
+    def code(self) -> str:
         return "Z026"
 
     def message(self) -> str:
-        return f"  compiled Code at {self.path}"
+        return f"  compiled code at {self.path}"
 
 
-@dataclass
-class CheckNodeTestFailure(InfoLevel, pt.CheckNodeTestFailure):
-    def code(self):
+class CheckNodeTestFailure(InfoLevel):
+    def code(self) -> str:
         return "Z027"
 
     def message(self) -> str:
@@ -2563,56 +1996,56 @@ class CheckNodeTestFailure(InfoLevel, pt.CheckNodeTestFailure):
         return f"  See test failures:\n  {border}\n  {msg}\n  {border}"
 
 
-# FirstRunResultError and AfterFirstRunResultError are just splitting the message from the result
-#  object into multiple log lines
-# TODO: is this reallly needed?  See printer.py
-@dataclass
-class FirstRunResultError(ErrorLevel, EventStringFunctor, pt.FirstRunResultError):
-    def code(self):
-        return "Z028"
-
-    def message(self) -> str:
-        return yellow(self.msg)
+# Skipped Z028, Z029
 
 
-@dataclass
-class AfterFirstRunResultError(ErrorLevel, EventStringFunctor, pt.AfterFirstRunResultError):
-    def code(self):
-        return "Z029"
-
-    def message(self) -> str:
-        return self.msg
-
-
-@dataclass
-class EndOfRunSummary(InfoLevel, pt.EndOfRunSummary):
-    def code(self):
+class EndOfRunSummary(InfoLevel):
+    def code(self) -> str:
         return "Z030"
 
     def message(self) -> str:
         error_plural = pluralize(self.num_errors, "error")
         warn_plural = pluralize(self.num_warnings, "warning")
+        partial_success_plural = f"""{self.num_partial_success} partial {"success" if self.num_partial_success == 1 else "successes"}"""
+
         if self.keyboard_interrupt:
-            message = yellow("Exited because of keyboard interrupt.")
+            message = yellow("Exited because of keyboard interrupt")
         elif self.num_errors > 0:
-            message = red("Completed with {} and {}:".format(error_plural, warn_plural))
+            message = red(
+                f"Completed with {error_plural}, {partial_success_plural}, and {warn_plural}:"
+            )
+        elif self.num_partial_success > 0:
+            message = yellow(f"Completed with {partial_success_plural} and {warn_plural}")
         elif self.num_warnings > 0:
-            message = yellow("Completed with {}:".format(warn_plural))
+            message = yellow(f"Completed with {warn_plural}:")
         else:
             message = green("Completed successfully")
         return message
 
 
-# Skipped Z031, Z032, Z033
+# Skipped Z031, Z032
 
 
-@dataclass
-class LogSkipBecauseError(ErrorLevel, pt.LogSkipBecauseError):
-    def code(self):
+class MarkSkippedChildren(DebugLevel):
+    def code(self) -> str:
+        return "Z033"
+
+    def message(self) -> str:
+        msg = (
+            f"Marking all children of '{self.unique_id}' to be skipped "
+            f"because of status '{self.status}'. "
+        )
+        if self.run_result.message:
+            msg = msg + f" Reason: {self.run_result.message}."
+        return msg
+
+
+class LogSkipBecauseError(ErrorLevel):
+    def code(self) -> str:
         return "Z034"
 
     def message(self) -> str:
-        msg = f"SKIP relation {self.schema}.{self.relation} due to ephemeral model error"
+        msg = f"SKIP relation {self.schema}.{self.relation} due to ephemeral model status '{self.status}'"
         return format_fancy_output_line(
             msg=msg, status=red("ERROR SKIP"), index=self.index, total=self.total
         )
@@ -2621,9 +2054,8 @@ class LogSkipBecauseError(ErrorLevel, pt.LogSkipBecauseError):
 # Skipped Z035
 
 
-@dataclass
-class EnsureGitInstalled(ErrorLevel, pt.EnsureGitInstalled):
-    def code(self):
+class EnsureGitInstalled(ErrorLevel):
+    def code(self) -> str:
         return "Z036"
 
     def message(self) -> str:
@@ -2634,27 +2066,24 @@ class EnsureGitInstalled(ErrorLevel, pt.EnsureGitInstalled):
         )
 
 
-@dataclass
-class DepsCreatingLocalSymlink(DebugLevel, pt.DepsCreatingLocalSymlink):
-    def code(self):
+class DepsCreatingLocalSymlink(DebugLevel):
+    def code(self) -> str:
         return "Z037"
 
     def message(self) -> str:
-        return "  Creating symlink to local dependency."
+        return "Creating symlink to local dependency."
 
 
-@dataclass
-class DepsSymlinkNotAvailable(DebugLevel, pt.DepsSymlinkNotAvailable):
-    def code(self):
+class DepsSymlinkNotAvailable(DebugLevel):
+    def code(self) -> str:
         return "Z038"
 
     def message(self) -> str:
-        return "  Symlinks are not available on this OS, copying dependency."
+        return "Symlinks are not available on this OS, copying dependency."
 
 
-@dataclass
-class DisableTracking(DebugLevel, pt.DisableTracking):
-    def code(self):
+class DisableTracking(DebugLevel):
+    def code(self) -> str:
         return "Z039"
 
     def message(self) -> str:
@@ -2665,69 +2094,86 @@ class DisableTracking(DebugLevel, pt.DisableTracking):
         )
 
 
-@dataclass
-class SendingEvent(DebugLevel, pt.SendingEvent):
-    def code(self):
+class SendingEvent(DebugLevel):
+    def code(self) -> str:
         return "Z040"
 
     def message(self) -> str:
         return f"Sending event: {self.kwargs}"
 
 
-@dataclass
-class SendEventFailure(DebugLevel, pt.SendEventFailure):
-    def code(self):
+class SendEventFailure(DebugLevel):
+    def code(self) -> str:
         return "Z041"
 
     def message(self) -> str:
         return "An error was encountered while trying to send an event"
 
 
-@dataclass
-class FlushEvents(DebugLevel, pt.FlushEvents):
-    def code(self):
+class FlushEvents(DebugLevel):
+    def code(self) -> str:
         return "Z042"
 
     def message(self) -> str:
         return "Flushing usage events"
 
 
-@dataclass
-class FlushEventsFailure(DebugLevel, pt.FlushEventsFailure):
-    def code(self):
+class FlushEventsFailure(DebugLevel):
+    def code(self) -> str:
         return "Z043"
 
     def message(self) -> str:
         return "An error was encountered while trying to flush usage events"
 
 
-@dataclass
-class TrackingInitializeFailure(DebugLevel, pt.TrackingInitializeFailure):  # noqa
-    def code(self):
+class TrackingInitializeFailure(DebugLevel):
+    def code(self) -> str:
         return "Z044"
 
     def message(self) -> str:
         return "Got an exception trying to initialize tracking"
 
 
-@dataclass
-class EventBufferFull(WarnLevel, pt.EventBufferFull):
-    def code(self):
-        return "Z045"
-
-    def message(self) -> str:
-        return (
-            "Internal logging/event buffer full."
-            "Earliest logs/events will be dropped as new ones are fired (FIFO)."
-        )
-
-
 # this is the message from the result object
-@dataclass
-class RunResultWarningMessage(WarnLevel, EventStringFunctor, pt.RunResultWarningMessage):
-    def code(self):
+
+
+class RunResultWarningMessage(WarnLevel):
+    def code(self) -> str:
         return "Z046"
 
     def message(self) -> str:
         # This is the message on the result object, cannot be formatted in event
         return self.msg
+
+
+class DebugCmdOut(InfoLevel):
+    def code(self) -> str:
+        return "Z047"
+
+    def message(self) -> str:
+        return self.msg
+
+
+class DebugCmdResult(InfoLevel):
+    def code(self) -> str:
+        return "Z048"
+
+    def message(self) -> str:
+        return self.msg
+
+
+class ListCmdOut(InfoLevel):
+    # No longer in use, switching to Z051 PrintEvent in dbt-common
+    def code(self) -> str:
+        return "Z049"
+
+    def message(self) -> str:
+        return self.msg
+
+
+class ResourceReport(DebugLevel):
+    def code(self) -> str:
+        return "Z051"
+
+    def message(self) -> str:
+        return f"Resource report: {self.to_json()}"

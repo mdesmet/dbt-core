@@ -1,8 +1,7 @@
 import pytest
 
-from dbt.exceptions import CompilationException
+from dbt.exceptions import CompilationError
 from dbt.tests.util import run_dbt
-
 
 my_model_sql = """
 select 1 as id
@@ -27,7 +26,7 @@ class TestDuplicateAnalysis:
 
     def test_duplicate_model_enabled(self, project):
         message = "dbt found two analyses with the name"
-        with pytest.raises(CompilationException) as exc:
+        with pytest.raises(CompilationError) as exc:
             run_dbt(["compile"])
         exc_str = " ".join(str(exc.value).split())  # flatten all whitespace
         assert message in exc_str
