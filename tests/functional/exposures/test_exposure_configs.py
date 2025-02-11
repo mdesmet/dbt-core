@@ -1,16 +1,19 @@
 import pytest
-from hologram import ValidationError
 
-from dbt.contracts.graph.model_config import ExposureConfig
-
-from dbt.tests.util import run_dbt, update_config_file, get_manifest
+from dbt.artifacts.resources import ExposureConfig
+from dbt.tests.util import get_manifest, run_dbt, update_config_file
+from dbt_common.dataclass_schema import ValidationError
 from tests.functional.exposures.fixtures import (
-    models_sql,
-    second_model_sql,
-    simple_exposure_yml,
     disabled_models_exposure_yml,
     enabled_yaml_level_exposure_yml,
-    invalid_config_exposure_yml
+    invalid_config_exposure_yml,
+    metricflow_time_spine_sql,
+    metrics_schema_yml,
+    models_sql,
+    second_model_sql,
+    semantic_models_schema_yml,
+    simple_exposure_yml,
+    source_schema_yml,
 )
 
 
@@ -28,8 +31,12 @@ class TestExposureEnabledConfigProjectLevel(ExposureConfigTests):
     def models(self):
         return {
             "model.sql": models_sql,
+            "metricflow_time_spine.sql": metricflow_time_spine_sql,
             "second_model.sql": second_model_sql,
-            "schema.yml": simple_exposure_yml,
+            "exposure.yml": simple_exposure_yml,
+            "schema.yml": source_schema_yml,
+            "semantic_models.yml": semantic_models_schema_yml,
+            "metrics.yml": metrics_schema_yml,
         }
 
     @pytest.fixture(scope="class")

@@ -1,20 +1,18 @@
-import pytest
 import re
-from dbt.tests.util import (
-    run_dbt,
-    run_dbt_and_capture,
-)
+
+import pytest
+
+from dbt.tests.util import run_dbt, run_dbt_and_capture
 from tests.functional.postgres.fixtures import (
     models__incremental_sql,
     models__table_sql,
-    models_invalid__missing_columns_sql,
     models_invalid__invalid_columns_type_sql,
     models_invalid__invalid_type_sql,
     models_invalid__invalid_unique_config_sql,
+    models_invalid__missing_columns_sql,
     seeds__seed_csv,
     snapshots__colors_sql,
 )
-
 
 INDEX_DEFINITION_PATTERN = re.compile(r"using\s+(\w+)\s+\((.+)\)\Z")
 
@@ -70,7 +68,7 @@ class TestPostgresIndex:
             results = run_dbt(["run", "--models", "incremental"] + additional_argument)
             assert len(results) == 1
 
-            indexes = self.get_indexes('incremental', project, unique_schema)
+            indexes = self.get_indexes("incremental", project, unique_schema)
             expected = [
                 {"columns": "column_a", "unique": False, "type": "hash"},
                 {"columns": "column_a, column_b", "unique": True, "type": "btree"},
@@ -78,11 +76,11 @@ class TestPostgresIndex:
             assert len(indexes) == len(expected)
 
     def test_seed(self, project, unique_schema):
-        for additional_argument in [[], [], ['--full-refresh']]:
+        for additional_argument in [[], [], ["--full-refresh"]]:
             results = run_dbt(["seed"] + additional_argument)
             assert len(results) == 1
 
-            indexes = self.get_indexes('seed', project, unique_schema)
+            indexes = self.get_indexes("seed", project, unique_schema)
             expected = [
                 {"columns": "country_code", "unique": False, "type": "hash"},
                 {"columns": "country_code, country_name", "unique": True, "type": "btree"},
@@ -94,7 +92,7 @@ class TestPostgresIndex:
             results = run_dbt(["snapshot", "--vars", f"version: {version}"])
             assert len(results) == 1
 
-            indexes = self.get_indexes('colors', project, unique_schema)
+            indexes = self.get_indexes("colors", project, unique_schema)
             expected = [
                 {"columns": "id", "unique": False, "type": "hash"},
                 {"columns": "id, color", "unique": True, "type": "btree"},
@@ -130,7 +128,7 @@ class TestPostgresIndex:
         assert len(a) == len(b)
 
 
-class TestPostgresInvalidIndex():
+class TestPostgresInvalidIndex:
     @pytest.fixture(scope="class")
     def models(self):
         return {

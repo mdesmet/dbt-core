@@ -1,27 +1,28 @@
-from pathlib import Path
 from copy import deepcopy
-from typing import Dict, Any, Union
-from dbt.clients.yaml_helper import yaml, Loader, Dumper, load_yaml_text  # noqa: F401
-from dbt.dataclass_schema import ValidationError
+from pathlib import Path
+from typing import Any, Dict, Union
 
-from .renderer import BaseRenderer
-
-from dbt.clients.system import (
+from dbt.clients.yaml_helper import Dumper, Loader, load_yaml_text, yaml  # noqa: F401
+from dbt.contracts.selection import SelectorFile
+from dbt.exceptions import DbtSelectorsError
+from dbt.graph import SelectionSpec, parse_from_selectors_definition
+from dbt.graph.selector_spec import SelectionCriteria
+from dbt_common.clients.system import (
     load_file_contents,
     path_exists,
     resolve_path_from_base,
 )
-from dbt.contracts.selection import SelectorFile
-from dbt.exceptions import DbtSelectorsError, RuntimeException
-from dbt.graph import parse_from_selectors_definition, SelectionSpec
-from dbt.graph.selector_spec import SelectionCriteria
+from dbt_common.dataclass_schema import ValidationError
+from dbt_common.exceptions import DbtRuntimeError
+
+from .renderer import BaseRenderer
 
 MALFORMED_SELECTOR_ERROR = """\
 The selectors.yml file in this project is malformed. Please double check
 the contents of this file and fix any errors before retrying.
 
 You can find more information on the syntax for this file here:
-https://docs.getdbt.com/docs/package-management
+https://docs.getdbt.com/reference/node-selection/yaml-selectors
 
 Validator Error:
 {error}
@@ -46,7 +47,7 @@ class SelectorConfig(Dict[str, Dict[str, Union[SelectionSpec, bool]]]):
                 f"yaml-selectors",
                 result_type="invalid_selector",
             ) from exc
-        except RuntimeException as exc:
+        except DbtRuntimeError as exc:
             raise DbtSelectorsError(
                 f"Could not read selector file data: {exc}",
                 result_type="invalid_selector",
@@ -62,7 +63,7 @@ class SelectorConfig(Dict[str, Dict[str, Union[SelectionSpec, bool]]]):
     ) -> "SelectorConfig":
         try:
             rendered = renderer.render_data(data)
-        except (ValidationError, RuntimeException) as exc:
+        except (ValidationError, DbtRuntimeError) as exc:
             raise DbtSelectorsError(
                 f"Could not render selector data: {exc}",
                 result_type="invalid_selector",
@@ -77,7 +78,7 @@ class SelectorConfig(Dict[str, Dict[str, Union[SelectionSpec, bool]]]):
     ) -> "SelectorConfig":
         try:
             data = load_yaml_text(load_file_contents(str(path)))
-        except (ValidationError, RuntimeException) as exc:
+        except (ValidationError, DbtRuntimeError) as exc:
             raise DbtSelectorsError(
                 f"Could not read selector file: {exc}",
                 result_type="invalid_selector",

@@ -1,9 +1,10 @@
-import pytest
 import os
 
-from dbt.constants import SECRET_ENV_PREFIX, DEFAULT_ENV_PLACEHOLDER
-from dbt.tests.util import run_dbt, get_manifest, run_dbt_and_capture
+import pytest
 
+from dbt.constants import DEFAULT_ENV_PLACEHOLDER
+from dbt.tests.util import get_manifest, run_dbt, run_dbt_and_capture
+from dbt_common.constants import SECRET_ENV_PREFIX
 
 context_sql = """
 
@@ -34,6 +35,7 @@ select
     -- runtime variables
     '{{ run_started_at }}' as run_started_at,
     '{{ invocation_id }}'  as invocation_id,
+    '{{ thread_id }}'  as thread_id,
 
     '{{ env_var("DBT_TEST_ENV_VAR") }}' as env_var,
     '{{ env_var("DBT_TEST_IGNORE_DEFAULT", "ignored_default_val") }}' as env_var_ignore_default,
@@ -54,13 +56,13 @@ class TestEnvVars:
         os.environ["DBT_TEST_ENV_VAR"] = "1"
         os.environ["DBT_TEST_USER"] = "root"
         os.environ["DBT_TEST_PASS"] = "password"
-        os.environ[SECRET_ENV_PREFIX + "SECRET"] = "secret_variable"
+        os.environ[SECRET_ENV_PREFIX + "_SECRET"] = "secret_variable"
         os.environ["DBT_TEST_NOT_SECRET"] = "regular_variable"
         os.environ["DBT_TEST_IGNORE_DEFAULT"] = "ignored_default"
         yield
         del os.environ["DBT_TEST_ENV_VAR"]
         del os.environ["DBT_TEST_USER"]
-        del os.environ[SECRET_ENV_PREFIX + "SECRET"]
+        del os.environ[SECRET_ENV_PREFIX + "_SECRET"]
         del os.environ["DBT_TEST_NOT_SECRET"]
         del os.environ["DBT_TEST_IGNORE_DEFAULT"]
 
@@ -114,6 +116,7 @@ class TestEnvVars:
             "target.pass",
             "run_started_at",
             "invocation_id",
+            "thread_id",
             "env_var",
         ]
         field_list = ", ".join(['"{}"'.format(f) for f in fields])
@@ -189,3 +192,37 @@ class TestEnvVars:
 
         assert not ("secret_variable" in log_output)
         assert "regular_variable" in log_output
+        del os.environ["DBT_DEBUG"]
+
+
+class TestEnvVarInCreateSchema:
+    """Test that the env_var() method works in overrides of the create_schema
+    macro, which is called during a different phase of execution than most
+    macros, causing problems."""
+
+    @pytest.fixture(scope="class", autouse=True)
+    def setup(self):
+        os.environ["DBT_TEST_ENV_VAR"] = "1"
+
+    @pytest.fixture(scope="class")
+    def macros(self):
+        return {
+            "macros.sql": """
+                {% macro create_schema(relation) %}
+                  {%- call statement('create_schema') -%}
+                     SELECT {{ env_var('DBT_TEST_ENV_VAR') }} as TEST
+                  {% endcall %}
+                {% endmacro %}%
+            """
+        }
+
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "mymodel.sql": """
+            SELECT 1 as TEST -- {%- do adapter.create_schema(this) -%}
+        """
+        }
+
+    def test_env_var_in_create_schema(self, project):
+        run_dbt(["run"])
