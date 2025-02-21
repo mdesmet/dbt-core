@@ -1,7 +1,8 @@
-import pytest
 import re
-from dbt.tests.util import run_dbt_and_capture
 
+import pytest
+
+from dbt.tests.util import run_dbt_and_capture
 
 models__do_nothing_then_fail_sql = """
 select 1,
@@ -16,7 +17,7 @@ def models():
 
 @pytest.fixture(scope="class")
 def project_config_update():
-    return {'config-version': 2}
+    return {"config-version": 2}
 
 
 class TestColors:

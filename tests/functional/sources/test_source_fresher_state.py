@@ -1,20 +1,19 @@
-import os
 import json
+import os
 import shutil
-import pytest
 from datetime import datetime, timedelta
 
-from dbt.exceptions import InternalException
+import pytest
 
-
-from dbt.tests.util import AnyStringWith, AnyFloat
 import dbt.version
+from dbt.contracts.results import FreshnessExecutionResultArtifact
+from dbt.tests.util import AnyFloat, AnyStringWith
+from dbt_common.exceptions import DbtInternalError
 from tests.functional.sources.common_source_setup import BaseSourcesTest
-
 from tests.functional.sources.fixtures import (
     error_models_schema_yml,
-    models_newly_added_model_sql,
     models_newly_added_error_model_sql,
+    models_newly_added_model_sql,
 )
 
 
@@ -81,6 +80,10 @@ class SuccessfulSourceFreshnessTest(BaseSourcesTest):
         with open(path) as fp:
             data = json.load(fp)
 
+        try:
+            FreshnessExecutionResultArtifact.validate(data)
+        except Exception:
+            raise pytest.fail("FreshnessExecutionResultArtifact did not validate")
         assert set(data) == {"metadata", "results", "elapsed_time"}
         assert "generated_at" in data["metadata"]
         assert isinstance(data["elapsed_time"], float)
@@ -90,7 +93,6 @@ class SuccessfulSourceFreshnessTest(BaseSourcesTest):
             == "https://schemas.getdbt.com/dbt/sources/v3.json"
         )
         assert data["metadata"]["dbt_version"] == dbt.version.__version__
-        assert data["metadata"]["invocation_id"] == dbt.tracking.active_user.invocation_id
         key = "key"
         if os.name == "nt":
             key = key.upper()
@@ -112,7 +114,7 @@ class SuccessfulSourceFreshnessTest(BaseSourcesTest):
                     "warn_after": {"count": 10, "period": "hour"},
                     "error_after": {"count": 18, "period": "hour"},
                 },
-                "adapter_response": {},
+                "adapter_response": {"_message": "SELECT 1", "code": "SELECT", "rows_affected": 1},
                 "thread_id": AnyStringWith("Thread-"),
                 "execution_time": AnyFloat(),
                 "timing": [
@@ -619,10 +621,10 @@ class TestSourceFresherNoPreviousState(SuccessfulSourceFreshnessTest):
     def test_intentional_failure_no_previous_state(self, project):
         self.run_dbt_with_vars(project, ["run"])
         # TODO add the current and previous but with previous as null
-        with pytest.raises(InternalException) as excinfo:
+        with pytest.raises(DbtInternalError) as excinfo:
             self.run_dbt_with_vars(
                 project,
-                ["run", "-s", "source_status:fresher", "--defer", "--state", "previous_state"],
+                ["run", "-s", "source_status:fresher", "--state", "previous_state"],
             )
         assert "No previous state comparison freshness results in sources.json" in str(
             excinfo.value
@@ -641,7 +643,7 @@ class TestSourceFresherNoCurrentState(SuccessfulSourceFreshnessTest):
         copy_to_previous_state()
         assert previous_state_results[0].max_loaded_at is not None
 
-        with pytest.raises(InternalException) as excinfo:
+        with pytest.raises(DbtInternalError) as excinfo:
             self.run_dbt_with_vars(
                 project,
                 ["run", "-s", "source_status:fresher", "--defer", "--state", "previous_state"],

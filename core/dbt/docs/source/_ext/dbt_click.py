@@ -1,11 +1,12 @@
-import click
-import click.types as click_t
-import dbt.cli.option_types as dbt_t
-from docutils import nodes
-from docutils.parsers.rst import Directive
 import traceback
 import typing as t
 
+import click
+import click.types as click_t
+from docutils import nodes
+from docutils.parsers.rst import Directive
+
+import dbt.cli.option_types as dbt_t
 
 PARAM_TYPE_MAP = {
     click_t.BoolParamType: lambda _: "boolean",
@@ -44,7 +45,9 @@ def format_params(cmd) -> t.List[nodes.section]:
         type_str = get_type_str(param.type)
 
         param_section.append(nodes.paragraph(text=f"Type: {type_str}"))
-        param_section.append(nodes.paragraph(text=param.help))
+        help_txt = getattr(param, "help", None)
+        if help_txt is not None:
+            param_section.append(nodes.paragraph(text=help_txt))
         lines.append(param_section)
     return lines
 

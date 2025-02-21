@@ -5,11 +5,12 @@
 1. [About this document](#about-this-document)
 2. [Getting the code](#getting-the-code)
 3. [Setting up an environment](#setting-up-an-environment)
-4. [Running `dbt` in development](#running-dbt-core-in-development)
+4. [Running dbt-core in development](#running-dbt-core-in-development)
 5. [Testing dbt-core](#testing)
 6. [Debugging](#debugging)
-7. [Adding a changelog entry](#adding-a-changelog-entry)
+7. [Adding or modifying a changelog entry](#adding-or-modifying-a-changelog-entry)
 8. [Submitting a Pull Request](#submitting-a-pull-request)
+9. [Troubleshooting Tips](#troubleshooting-tips)
 
 ## About this document
 
@@ -21,10 +22,10 @@ If you get stuck, we're happy to help! Drop us a line in the `#dbt-core-developm
 
 ### Notes
 
-- **Adapters:** Is your issue or proposed code change related to a specific [database adapter](https://docs.getdbt.com/docs/available-adapters)? If so, please open issues, PRs, and discussions in that adapter's repository instead. The sole exception is Postgres; the `dbt-postgres` plugin lives in this repository (`dbt-core`).
+- **Adapters:** Is your issue or proposed code change related to a specific [database adapter](https://docs.getdbt.com/docs/available-adapters)? If so, please open issues, PRs, and discussions in that adapter's repository instead.
 - **CLA:** Please note that anyone contributing code to `dbt-core` must sign the [Contributor License Agreement](https://docs.getdbt.com/docs/contributor-license-agreements). If you are unable to sign the CLA, the `dbt-core` maintainers will unfortunately be unable to merge any of your Pull Requests. We welcome you to participate in discussions, open issues, and comment on existing ones.
 - **Branches:** All pull requests from community contributors should target the `main` branch (default). If the change is needed as a patch for a minor version of dbt that has already been released (or is already a release candidate), a maintainer will backport the changes in your PR to the relevant "latest" release branch (`1.0.latest`, `1.1.latest`, ...). If an issue fix applies to a release branch, that fix should be first committed to the development branch and then to the release branch (rarely release-branch fixes may not apply to `main`).
-- **Releases**: Before releasing a new minor version of Core, we prepare a series of alphas and release candidates to allow users (especially employees of dbt Labs!) to test the new version in live environments. This is an important quality assurance step, as it exposes the new code to a wide variety of complicated deployments and can surface bugs before official release. Releases are accessible via pip, homebrew, and dbt Cloud.
+- **Releases**: Before releasing a new minor version of Core, we prepare a series of alphas and release candidates to allow users (especially employees of dbt Labs!) to test the new version in live environments. This is an important quality assurance step, as it exposes the new code to a wide variety of complicated deployments and can surface bugs before official release. Releases are accessible via our [supported installation methods](https://docs.getdbt.com/docs/core/installation-overview#install-dbt-core).
 
 ## Getting the code
 
@@ -44,9 +45,7 @@ If you are not a member of the `dbt-labs` GitHub organization, you can contribut
 
 ### dbt Labs contributors
 
-If you are a member of the `dbt-labs` GitHub organization, you will have push access to the `dbt-core` repo. Rather than forking `dbt-core` to make your changes, just clone the repository, check out a new branch, and push directly to that branch. Branch names should be fixed by `CT-XXX/` where:
-* CT stands for 'core team'
-* XXX stands for a JIRA ticket number
+If you are a member of the `dbt-labs` GitHub organization, you will have push access to the `dbt-core` repo. Rather than forking `dbt-core` to make your changes, just clone the repository, check out a new branch, and push directly to that branch.
 
 ## Setting up an environment
 
@@ -56,7 +55,7 @@ There are some tools that will be helpful to you in developing locally. While th
 
 These are the tools used in `dbt-core` development and testing:
 
-- [`tox`](https://tox.readthedocs.io/en/latest/) to manage virtualenvs across python versions. We currently target the latest patch releases for Python 3.7, 3.8, 3.9, and 3.10
+- [`tox`](https://tox.readthedocs.io/en/latest/) to manage virtualenvs across python versions. We currently target the latest patch releases for Python 3.8, 3.9, 3.10 and 3.11
 - [`pytest`](https://docs.pytest.org/en/latest/) to define, discover, and run tests
 - [`flake8`](https://flake8.pycqa.org/en/latest/) for code linting
 - [`black`](https://github.com/psf/black) for code formatting
@@ -96,12 +95,15 @@ brew install postgresql
 
 ### Installation
 
-First make sure that you set up your `virtualenv` as described in [Setting up an environment](#setting-up-an-environment).  Also ensure you have the latest version of pip installed with `pip install --upgrade pip`. Next, install `dbt-core` (and its dependencies) with:
+First make sure that you set up your `virtualenv` as described in [Setting up an environment](#setting-up-an-environment).  Also ensure you have the latest version of pip installed with `pip install --upgrade pip`. Next, install `dbt-core` (and its dependencies):
 
 ```sh
 make dev
-# or
+```
+or, alternatively:
+```sh
 pip install -r dev-requirements.txt -r editable-requirements.txt
+pre-commit install
 ```
 
 When installed in this way, any changes you make to your local copy of the source code will be reflected immediately in your next `dbt` run.
@@ -110,7 +112,7 @@ When installed in this way, any changes you make to your local copy of the sourc
 
 With your virtualenv activated, the `dbt` script should point back to the source code you've cloned on your machine. You can verify this by running `which dbt`. This command should show you a path to an executable in your virtualenv.
 
-Configure your [profile](https://docs.getdbt.com/docs/configure-your-profile) as necessary to connect to your target databases. It may be a good idea to add a new profile pointing to a local Postgres instance, or a specific test sandbox within your data warehouse if appropriate.
+Configure your [profile](https://docs.getdbt.com/docs/configure-your-profile) as necessary to connect to your target databases. It may be a good idea to add a new profile pointing to a local Postgres instance, or a specific test sandbox within your data warehouse if appropriate. Make sure to create a profile before running integration tests.
 
 ## Testing
 
@@ -160,7 +162,7 @@ suites.
 
 #### `tox`
 
-[`tox`](https://tox.readthedocs.io/en/latest/) takes care of managing virtualenvs and install dependencies in order to run tests. You can also run tests in parallel, for example, you can run unit tests for Python 3.7, Python 3.8, Python 3.9, and Python 3.10 checks in parallel with `tox -p`. Also, you can run unit tests for specific python versions with `tox -e py37`. The configuration for these tests in located in `tox.ini`.
+[`tox`](https://tox.readthedocs.io/en/latest/) takes care of managing virtualenvs and install dependencies in order to run tests. You can also run tests in parallel, for example, you can run unit tests for Python 3.8, Python 3.9, Python 3.10 and Python 3.11 checks in parallel with `tox -p`. Also, you can run unit tests for specific python versions with `tox -e py38`. The configuration for these tests in located in `tox.ini`.
 
 #### `pytest`
 
@@ -168,12 +170,10 @@ Finally, you can also run a specific test or group of tests using [`pytest`](htt
 
 ```sh
 # run all unit tests in a file
-python3 -m pytest test/unit/test_graph.py
+python3 -m pytest tests/unit/test_invocation_id.py
 # run a specific unit test
-python3 -m pytest test/unit/test_graph.py::GraphTest::test__dependency_list
-# run specific Postgres integration tests (old way)
-python3 -m pytest -m profile_postgres test/integration/074_postgres_unlogged_table_tests
-# run specific Postgres integration tests (new way)
+python3 -m pytest tests/unit/test_invocation_id.py::TestInvocationId::test_invocation_id
+# run specific Postgres functional tests
 python3 -m pytest tests/functional/sources
 ```
 
@@ -182,9 +182,8 @@ python3 -m pytest tests/functional/sources
 ### Unit, Integration, Functional?
 
 Here are some general rules for adding tests:
-* unit tests (`test/unit` & `tests/unit`) don’t need to access a database; "pure Python" tests should be written as unit tests
-* functional tests (`test/integration` & `tests/functional`) cover anything that interacts with a database, namely adapter
-* *everything in* `test/*` *is being steadily migrated to* `tests/*`
+* unit tests (`tests/unit`) don’t need to access a database; "pure Python" tests should be written as unit tests
+* functional tests (`tests/functional`) cover anything that interacts with a database, namely adapter
 
 ## Debugging
 
@@ -201,22 +200,32 @@ Here are some general rules for adding tests:
 * Sometimes flake8 complains about lines that are actually fine, in which case you can put a comment on the line such as: # noqa or # noqa: ANNN, where ANNN is the error code that flake8 issues.
 * To collect output for `CProfile`, run dbt with the `-r` option and the name of an output file, i.e. `dbt -r dbt.cprof run`. If you just want to profile parsing, you can do: `dbt -r dbt.cprof parse`. `pip` install `snakeviz` to view the output. Run `snakeviz dbt.cprof` and output will be rendered in a browser window.
 
-## Adding a CHANGELOG Entry
+## Adding or modifying a CHANGELOG Entry
 
 We use [changie](https://changie.dev) to generate `CHANGELOG` entries. **Note:** Do not edit the `CHANGELOG.md` directly. Your modifications will be lost.
 
 Follow the steps to [install `changie`](https://changie.dev/guide/installation/) for your system.
 
-Once changie is installed and your PR is created, simply run `changie new` and changie will walk you through the process of creating a changelog entry.  Commit the file that's created and your changelog entry is complete!
+Once changie is installed and your PR is created for a new feature, simply run the following command and changie will walk you through the process of creating a changelog entry:
+
+```shell
+changie new
+```
+
+Commit the file that's created and your changelog entry is complete!
+
+If you are contributing to a feature already in progress, you will modify the changie yaml file in dbt/.changes/unreleased/ related to your change. If you need help finding this file, please ask within the discussion for the pull request!
 
 You don't need to worry about which `dbt-core` version your change will go into. Just create the changelog entry with `changie`, and open your PR against the `main` branch. All merged changes will be included in the next minor version of `dbt-core`. The Core maintainers _may_ choose to "backport" specific changes in order to patch older minor versions. In that case, a maintainer will take care of that backport after merging your PR, before releasing the new version of `dbt-core`.
 
 ## Submitting a Pull Request
 
-Code can be merged into the current development branch `main` by opening a pull request. A `dbt-core` maintainer will review your PR. They may suggest code revision for style or clarity, or request that you add unit or integration test(s). These are good things! We believe that, with a little bit of help, anyone can contribute high-quality code.
+Code can be merged into the current development branch `main` by opening a pull request. If the proposal looks like it's on the right track, then a `dbt-core` maintainer will triage the PR and label it as `ready_for_review`. From this point, two code reviewers will be assigned with the aim of responding to any updates to the PR within about one week. They may suggest code revision for style or clarity, or request that you add unit or integration test(s). These are good things! We believe that, with a little bit of help, anyone can contribute high-quality code. Once merged, your contribution will be available for the next release of `dbt-core`.
 
 Automated tests run via GitHub Actions. If you're a first-time contributor, all tests (including code checks and unit tests) will require a maintainer to approve. Changes in the `dbt-core` repository trigger integration tests against Postgres. dbt Labs also provides CI environments in which to test changes to other adapters, triggered by PRs in those adapters' repositories, as well as periodic maintenance checks of each adapter in concert with the latest `dbt-core` code changes.
 
 Once all tests are passing and your PR has been approved, a `dbt-core` maintainer will merge your changes into the active development branch. And that's it! Happy developing :tada:
+
+## Troubleshooting Tips
 
 Sometimes, the content license agreement auto-check bot doesn't find a user's entry in its roster. If you need to force a rerun, add `@cla-bot check` in a comment on the pull request.

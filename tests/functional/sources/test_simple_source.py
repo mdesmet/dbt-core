@@ -1,23 +1,22 @@
 import os
+
 import pytest
 import yaml
-from dbt.exceptions import ParsingException
 
+from dbt.exceptions import ParsingError
 from dbt.tests.util import (
-    run_dbt,
-    update_config_file,
     check_relations_equal,
     check_table_does_not_exist,
+    run_dbt,
+    update_config_file,
 )
-from tests.functional.sources.common_source_setup import (
-    BaseSourcesTest,
-)
+from tests.functional.sources.common_source_setup import BaseSourcesTest
 from tests.functional.sources.fixtures import (
     macros_macro_sql,
-    malformed_models_schema_yml,
     malformed_models_descendant_model_sql,
-    malformed_schema_tests_schema_yml,
+    malformed_models_schema_yml,
     malformed_schema_tests_model_sql,
+    malformed_schema_tests_schema_yml,
 )
 
 
@@ -164,7 +163,7 @@ class TestMalformedSources(BaseSourcesTest):
         }
 
     def test_malformed_schema_will_break_run(self, project):
-        with pytest.raises(ParsingException):
+        with pytest.raises(ParsingError):
             self.run_dbt_with_vars(project, ["seed"])
 
 
